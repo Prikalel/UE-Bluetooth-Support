@@ -34,7 +34,6 @@
         import java.util.List;
         import java.util.UUID;
         import java.util.concurrent.Semaphore;
-        import java.util.concurrent.atomic.AtomicBoolean;
         import androidx.annotation.RequiresApi;
         import android.content.pm.PackageManager;
         import android.widget.Toast;
@@ -81,6 +80,7 @@
   <gameActivityOnCreateAdditions>
     <insert><![CDATA[
         taBluetoothAdapter = null;
+        discoveredLEResults = null;
         // Accessing the device's default bluetooth adapter (API level 18).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2)
         {
@@ -92,9 +92,10 @@
         }
 
         // Nearby device discovery, connection, characteristic reading (API level 21).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && taBluetoothAdapter != null)
         {
             discoveredLEResults = new ArrayList<>();  
+            taBluetoothLeScanner = taBluetoothAdapter.getBluetoothLeScanner();
         }
     ]]>
     </insert>
@@ -156,12 +157,14 @@
         // as the requestCode parameter.
         public static final int REQUEST_ENABLE_BT = 667;
 
-        private AtomicBoolean isScanning = new AtomicBoolean();
+        private boolean isScanning = false;
         
         private Handler mHandler = new Handler();
 
         // Semaphore used for access discoveredLEResults.
         private final Semaphore LEResultsAccessSemaphore = new Semaphore(1, true);
+        // Semaphore used for control scanning process (start and stop).
+        private final Semaphore scanControlSemaphore = new Semaphore(1, true);
 
 
         // Callback c++.
@@ -194,10 +197,12 @@
             LocationManager lm = (LocationManager)getSystemService(Context.LOCATION_SERVICE);
             boolean gps_enabled = false;
 
-            try {
-                gps_enabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
-            } catch(IllegalArgumentException e) {
-                // Ignore.
+            if (lm != null) {
+                try {
+                    gps_enabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
+                } catch(IllegalArgumentException e) {
+                    // Ignore.
+                }
             }
 
             return gps_enabled;
@@ -277,27 +282,29 @@
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
         public void startLEScan (int scanTimeoutMillisecond, long scanReportDelay)
         {
-            // Prevent user from calling scan multiple times.
-            stopLEScan();
-            
             // If this check fails then getBluetoothLeScanner() returns null. 
             // If current device don't support bluetooth then isBluetoothEnabled() will be false.
             if ( !isBluetoothEnabled() || !isBluetoothLowEnergySupported() ) return;
 
+            scanControlSemaphore.acquireUninterruptibly();
+
+            // Prevent user from calling scan multiple times.
+            stopLEScan_safe();
+
             mScanCallback = new BtleScanCallback();
-            taBluetoothLeScanner = taBluetoothAdapter.getBluetoothLeScanner();
+            isScanning = true;
 
             // For this method, list all available devices.
-            isScanning.set(true);
-
             taBluetoothLeScanner.startScan(null,
                     (new ScanSettings.Builder()
                     .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
                     .setReportDelay(scanReportDelay)
                     .build()),
                     mScanCallback);
-            
+
             mHandler.postDelayed(new ScanStopper(), 0, scanTimeoutMillisecond);
+
+            scanControlSemaphore.release();
         }
 
         /**
@@ -311,9 +318,6 @@
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
         public void startFilteredScan (int scanTimeoutMillisecond, long scanReportDelay, final String uuidStr, final String deviceAddr)
         {
-            // Prevent user from calling scan multiple times.
-            stopLEScan();
-
             // If this check fails then getBluetoothLeScanner() returns null.
             // If current device don't support bluetooth then isBluetoothEnabled() will be false.
             if ( !isBluetoothEnabled() || !isBluetoothLowEnergySupported() ) return;
@@ -348,8 +352,13 @@
 
             if (scanFilter == null ) return;
 
+            scanControlSemaphore.acquireUninterruptibly();
+
+            // Prevent user from calling scan multiple times.
+            stopLEScan_safe();
+
             mScanCallback = new BtleScanCallback();
-            taBluetoothLeScanner = taBluetoothAdapter.getBluetoothLeScanner();
+            isScanning = true;
 
             taBluetoothLeScanner.startScan(Arrays.asList(scanFilter),
                     (new ScanSettings.Builder()
@@ -358,21 +367,34 @@
                     .build()),
                     mScanCallback);
 
-            isScanning.set(true);
-
             mHandler.postDelayed(new ScanStopper(), 0, scanTimeoutMillisecond);
+
+            scanControlSemaphore.release();
         }
 
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        public void stopLEScan()
+        private boolean stopLEScan_safe()
         {
             // Stop countdown immidiately. We used token 0 for all ScanStoppers.
             mHandler.removeCallbacksAndMessages(0);
 
-            if (isScanning.getAndSet(false) && isBluetoothEnabled() && taBluetoothLeScanner != null)
+            if (isScanning)
             {
                 taBluetoothLeScanner.stopScan(mScanCallback);
                 mScanCallback = null;
+                isScanning = false;
+                return true;
+            }
+            return false;
+        }
+        
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public void stopLEScan()
+        {
+            scanControlSemaphore.acquireUninterruptibly();
+            boolean reallyStopped = stopLEScan_safe();
+            scanControlSemaphore.release();
+            if (reallyStopped) {
                 scanNativeFinishedCallback();
             }
         }
@@ -382,7 +404,7 @@
         */
         public boolean isScanning()
         {
-            return isScanning.get();
+            return isScanning;
         }
 
         /**
