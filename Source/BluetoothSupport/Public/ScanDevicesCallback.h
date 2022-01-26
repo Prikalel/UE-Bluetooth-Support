@@ -48,7 +48,7 @@ public:
 	* @param scanReportDelay If > 0 then delay for milliseconds & then return multiple scan reports.
 	*/
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Scan Nearby Bluetooth Devices",
-		BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = "Bluetooth Support Plugin")
+		BlueprintInternalUseOnly = "true", WorldContext = "WorldContextObject"), Category = "Bluetooth Support Plugin|Scanning")
 	static UScanDevicesCallback* ScanNearbyDevices(int32 timeout, 
 													const FString& serviceUUID, const FString& deviceAddress, int64 scanReportDelay = 5000);
 

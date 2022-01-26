@@ -61,10 +61,10 @@ bool UBluetoothSupportBPLibrary::DisableBluetooth()
 	return false;
 }
 
-TArray<UBluetoothDevice*> UBluetoothSupportBPLibrary::GetBoundedDevices()
+TArray<UBluetoothDevice*> UBluetoothSupportBPLibrary::GetBondedDevices()
 {
 #if PLATFORM_ANDROID
-	return TaDispatcher::Get().GetAndroidGatewayInterface()->GetBoundedDevices();
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->GetBondedDevices();
 #endif
 	return {};
 }
@@ -81,6 +81,22 @@ bool UBluetoothSupportBPLibrary::IsBluetoothScanning()
 {
 #if PLATFORM_ANDROID
 	return TaDispatcher::Get().GetAndroidGatewayInterface()->IsScanning();
+#endif
+	return false;
+}
+
+bool UBluetoothSupportBPLibrary::ScanBLEdevices(int32 scanTimeout, int64 scanReportDelay)
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->ScanBLEdevices(scanTimeout, scanReportDelay);
+#endif
+	return false;
+}
+
+bool UBluetoothSupportBPLibrary::ScanByCharacteristic(int32 scanTimeout, int64 scanReportDelay, FString serviceUUID, FString deviceAddress)
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->ScanByCharacteristic(scanTimeout, scanReportDelay, serviceUUID, deviceAddress);
 #endif
 	return false;
 }
@@ -107,18 +123,106 @@ void UBluetoothSupportBPLibrary::ClearDiscoveredDevicesList()
 #endif
 }
 
-bool UBluetoothSupportBPLibrary::ScanBLEdevices(int32 scanTimeout, int64 scanReportDelay)
-{
+bool UBluetoothSupportBPLibrary::CreateGattServer(FString serviceUUID, int32 maxConnections) {
 #if PLATFORM_ANDROID
-	return TaDispatcher::Get().GetAndroidGatewayInterface()->ScanBLEdevices(scanTimeout, scanReportDelay);
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->CreateGattServer(serviceUUID, maxConnections);
 #endif
 	return false;
 }
 
-bool UBluetoothSupportBPLibrary::ScanByCharacteristic(int32 scanTimeout, int64 scanReportDelay, FString serviceUUID, FString deviceAddress)
+void UBluetoothSupportBPLibrary::ResumeAdvertisments()
 {
 #if PLATFORM_ANDROID
-	return TaDispatcher::Get().GetAndroidGatewayInterface()->ScanByCharacteristic(scanTimeout, scanReportDelay, serviceUUID, deviceAddress);
+	TaDispatcher::Get().GetAndroidGatewayInterface()->ResumeAdvertisments();
+#endif
+}
+
+void UBluetoothSupportBPLibrary::StopAdvertisments()
+{
+#if PLATFORM_ANDROID
+	TaDispatcher::Get().GetAndroidGatewayInterface()->StopAdvertisments();
+#endif
+}
+
+void UBluetoothSupportBPLibrary::StopGattServer()
+{
+#if PLATFORM_ANDROID
+	TaDispatcher::Get().GetAndroidGatewayInterface()->StopGattServer();
+#endif
+}
+
+bool UBluetoothSupportBPLibrary::IsAdvertismentsOn()
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->IsAdvertismentsOn();
+#endif
+	return false;
+}
+
+bool UBluetoothSupportBPLibrary::IsGattServerOn()
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->IsGattServerOn();
+#endif
+	return false;
+}
+
+bool UBluetoothSupportBPLibrary::SetAutoAdvertisments(bool toAutoAdvertisments)
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->SetAutoAdvertisments(toAutoAdvertisments);
+#endif
+	return false;
+}
+
+TArray<UBluetoothDevice*> UBluetoothSupportBPLibrary::GetGattServerDevices()
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->GetGattServerDevices();
+#endif
+	return {};
+}
+
+bool UBluetoothSupportBPLibrary::IsDeviceConnected(UBluetoothDevice* device)
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->IsDeviceConnected(device);
+#endif
+	return false;
+}
+
+bool UBluetoothSupportBPLibrary::SendGattMessage(UBluetoothDevice* device, FString message) {
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->SendGattMessage(device, message);
+#endif
+	return false;
+}
+
+void UBluetoothSupportBPLibrary::CancelGattDeviceConnection(UBluetoothDevice* device)
+{
+#if PLATFORM_ANDROID
+	TaDispatcher::Get().GetAndroidGatewayInterface()->CancelGattDeviceConnection(device);
+#endif
+}
+
+bool UBluetoothSupportBPLibrary::ConnectGatt(UBluetoothDevice* device) {
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->ConnectGatt(device);
+#endif
+	return false;
+}
+
+void UBluetoothSupportBPLibrary::DisconnectGatt()
+{
+#if PLATFORM_ANDROID
+	TaDispatcher::Get().GetAndroidGatewayInterface()->DisconnectGatt();
+#endif
+}
+
+bool UBluetoothSupportBPLibrary::IsGattConnected()
+{
+#if PLATFORM_ANDROID
+	return TaDispatcher::Get().GetAndroidGatewayInterface()->IsGattConnected();
 #endif
 	return false;
 }

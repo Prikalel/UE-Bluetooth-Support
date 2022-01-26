@@ -2,6 +2,18 @@
 <!-- 
     ! Created By Taha HICHRI
     Copyright (c) Taha HICHRI <hishri.taha@gmail.com> - 2018
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    ! DEBUG LOG CONFIGURATION.
+    See DebugLog function in <gameActivityClassAdditions> in section 
+        'Global variables used in methods'.
+    Rewrite it as you want.
+
+    TODO: go throth the functions and check API levels (set @RequiresApi(api ...) correct) !!!!
 -->
 <root xmlns:android="http://schemas.android.com/apk/res/android">
   <init>
@@ -27,33 +39,61 @@
   <gameActivityImportAdditions>
     <insert>
     <!-- Inject imports here. -->
+        import java.lang.Boolean;
+        import java.lang.System;
+        import java.lang.String;
+        import java.io.ByteArrayOutputStream;
+        import java.nio.ByteBuffer;
+        import java.nio.charset.StandardCharsets;
+        import java.util.Iterator;
         import java.util.ArrayList;
         import java.util.Arrays;
         import java.util.Set;
         import java.util.Date;
         import java.util.List;
         import java.util.UUID;
+        import java.util.concurrent.Callable;
+        import java.util.concurrent.FutureTask;
+        import java.util.concurrent.CopyOnWriteArrayList;
         import java.util.concurrent.Semaphore;
+        import java.util.concurrent.TimeUnit;
+        import java.util.concurrent.ConcurrentHashMap;
+        import java.util.concurrent.TimeoutException;
+        import java.util.concurrent.ArrayBlockingQueue;
+        import java.util.concurrent.atomic.AtomicReference;
         import androidx.annotation.RequiresApi;
-        import android.content.pm.PackageManager;
-        import android.widget.Toast;
         import android.content.Context;
         import android.content.Intent;
+        import android.content.IntentFilter;
+        import android.content.BroadcastReceiver;
+        import android.content.pm.PackageManager;
+        import android.widget.Toast;
         import android.os.Handler;
+        import android.os.HandlerThread;
         import android.os.Build;
         import android.os.ParcelUuid;
-        import android.location.LocationManager;
+        import android.os.SystemClock;
+        import android.location.LocationManager; <!-- BLE don't work with Geolocation turned off. -->
         import android.bluetooth.BluetoothDevice;
         import android.bluetooth.BluetoothAdapter;
         import android.bluetooth.BluetoothManager;
         import android.bluetooth.BluetoothGatt;
         import android.bluetooth.BluetoothGattCallback;
         import android.bluetooth.BluetoothGattService;
+        import android.bluetooth.BluetoothGattServer;
+        import android.bluetooth.BluetoothGattServerCallback;
+        import android.bluetooth.BluetoothGattCharacteristic;
+        import android.bluetooth.BluetoothGattDescriptor;
+        import android.bluetooth.BluetoothProfile;
         import android.bluetooth.le.ScanFilter;
         import android.bluetooth.le.ScanSettings;
         import android.bluetooth.le.BluetoothLeScanner;
         import android.bluetooth.le.ScanCallback;
         import android.bluetooth.le.ScanResult;
+        import android.bluetooth.le.BluetoothLeAdvertiser;
+        import android.bluetooth.le.AdvertiseSettings;
+        import android.bluetooth.le.AdvertiseData;
+        import android.bluetooth.le.AdvertiseCallback;
     </insert>
   </gameActivityImportAdditions>
 
@@ -62,10 +102,15 @@
     <!-- Needed regardless. -->
     <addPermission android:name="android.permission.BLUETOOTH" />
     
-    <!-- Required solely for BLE, Bluetooth can be used for location, get coarse location. -->
+    <!-- Required solely for BLE, Bluetooth can be used for location, get coarse location. 
+    Dangerous permissions need to be admitted by the user (request them at runtime).
+    -->
     <addPermission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <addPermission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <addPermission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <addPermission android:name="android.permission.BLUETOOTH_CONNECT" /> <!-- dangerous (added API 31) -->
+    <addPermission android:name="android.permission.BLUETOOTH_ADVERTISE" /> <!-- dangerous (added API 31) -->
+    <addPermission android:name="android.permission.BLUETOOTH_SCAN" /> <!-- dangerous (added API 31) -->
+    <addPermission android:name="android.permission.ACCESS_COARSE_LOCATION" /> <!-- dangerous -->
+    <addPermission android:name="android.permission.ACCESS_FINE_LOCATION" /> <!-- dangerous -->
     
     <!-- Normally the low-energy feature is required, However, I am going to enable some features for devices
     which do not support BLE, such as manipulating the adapter and getting BL status. -->
@@ -79,23 +124,38 @@
   -->
   <gameActivityOnCreateAdditions>
     <insert><![CDATA[
+        // List of fields we gonna initialize.
+        taBluetoothManager = null;
         taBluetoothAdapter = null;
-        discoveredLEResults = null;
+        taBluetoothLeScanner = null;
+        taDiscoveredLEResults = null;
+        // We gonna start the plugin' own thread (only in case Bluetooth is available).
+        taHandlerThread = null;
+        taHandler = null;
+
         // Accessing the device's default bluetooth adapter (API level 18).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2)
         {
-            final BluetoothManager bluetoothManager =
+            taBluetoothManager =
             (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-            if (bluetoothManager != null) {
-                taBluetoothAdapter = bluetoothManager.getAdapter();
+            if (taBluetoothManager != null) {
+                taBluetoothAdapter = taBluetoothManager.getAdapter();
+                if (taBluetoothAdapter != null && taHandlerThread == null && taHandler == null) {
+                    taHandlerThread = new HandlerThread("BLEsupportPluginThread");
+                    taHandlerThread.start();
+                    taHandler = new Handler(taHandlerThread.getLooper());
+                    getApplicationContext().registerReceiver(taBluetoothReceiver, new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
+                }
             }
         }
 
         // Nearby device discovery, connection, characteristic reading (API level 21).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP && taBluetoothAdapter != null)
         {
-            discoveredLEResults = new ArrayList<>();  
-            taBluetoothLeScanner = taBluetoothAdapter.getBluetoothLeScanner();
+            if (isBluetoothLowEnergySupported()) {
+                taBluetoothLeScanner = taBluetoothAdapter.getBluetoothLeScanner();
+            }
+            taDiscoveredLEResults = new CopyOnWriteArrayList<CBluetoothDevice>();  
         }
     ]]>
     </insert>
@@ -104,8 +164,15 @@
   <!-- Optional additions to GameActivity onDestroy in GameActivity.java. -->
   <gameActivityOnDestroyAdditions>
     <insert><![CDATA[
-        // OnPause event called before this is called.
-        mHandler = null;
+        // OnPause&OnStop events called before this is called. Stop the plugin' thread.
+        if (taHandlerThread != null) {
+            getApplicationContext().unregisterReceiver(taBluetoothReceiver);
+            // (it will be stopped after processing all pending tasks).
+            taHandlerThread.quitSafely();
+            taHandlerThread = null;
+        }
+        // New tasks will not be added.
+        taHandler = null;
     ]]>
     </insert>
   </gameActivityOnDestroyAdditions>
@@ -116,7 +183,14 @@
 
   <!-- Optional additions to GameActivity onStop in GameActivity.java. -->
   <gameActivityOnStopAdditions>
-    <insert>
+    <insert><![CDATA[
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            stopBLEGattServer();
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+            stopBLEGattClient();
+        }
+    ]]>
     </insert>
   </gameActivityOnStopAdditions>
 
@@ -135,56 +209,112 @@
   </gameActivityOnResumeAdditions>
 
   <!-- 
-  # Methods, inner classes, and other the other additions. 
+  # Methods, inner classes, and other the other additions. Any public function can be passed to UE.
   --> 
   <gameActivityClassAdditions>
     <insert><![CDATA[
-        // See onCreate additions. Will be set only when API is >= 18 and device has Bluetooth support.
-        private BluetoothAdapter taBluetoothAdapter;
-        // Perform scan related operations for Bluetooth LE devices.
-        private BluetoothLeScanner taBluetoothLeScanner;
-        // See onCreate additions (where the variables was initialized with empty array). 
-        private List<CBluetoothDevice> discoveredLEResults;
-
-        // Intial scan for LE devices with, or without filters.
-        // Will be initialized in startLEScan() and set to null in stopLEScan().
-        BtleScanCallback mScanCallback;
-
-        // When user connects to a particular device.
-        BluetoothGatt taConnectGattDevice;
-
-        // The system passes this constant back to you in your onActivityResult() implementation 
-        // as the requestCode parameter.
-        public static final int REQUEST_ENABLE_BT = 667;
-
-        private boolean isScanning = false;
-        
-        private Handler mHandler = new Handler();
-
-        // Semaphore used for access discoveredLEResults.
-        private final Semaphore LEResultsAccessSemaphore = new Semaphore(1, true);
-        // Semaphore used for control scanning process (start and stop).
-        private final Semaphore scanControlSemaphore = new Semaphore(1, true);
-
-
-        // Callback c++.
-        private static native void scanNativeResultCallback(String bluetoothDeviceStr);
-        private static native void scanNativeFinishedCallback();
-        private static native void printDebugUEMessage(String msg);
-        
         /**
-        * If this device have bluetooth.
-        * @return True if enabled, false otherwise.
+        * ################### Global variables used in methods: ###################
+        * Plus logging function (DebugLog), you can rewrite it as you may need to.
         */
-        public boolean isBluetoothSupported()
-        {
+
+
+        // Used in obtaining the BL adapter & creating the gatt server.
+        volatile BluetoothManager taBluetoothManager;
+        // See onCreate additions. Will be set only when API is >= 18 and device has Bluetooth support.
+        volatile BluetoothAdapter taBluetoothAdapter;
+        // Perform scan related operations for Bluetooth LE devices.
+        volatile BluetoothLeScanner taBluetoothLeScanner;
+        // See onCreate additions (where the variables was initialized with empty array). 
+        CopyOnWriteArrayList<CBluetoothDevice> taDiscoveredLEResults;
+
+        // Initial scan for LE devices with, or without filters.
+        // Will be initialized in startLEScan() and set to null in stopLEScan().
+        BtleScanCallback taScanCallback;
+        
+        // The system passes this constant back to you in your onActivityResult() implementation 
+        // as the requestCode parameter. Used in enabling bluetooth.
+        static final int REQUEST_ENABLE_BT = 667;
+        
+        // If this value is set to true then we are scanning that means that 
+        // taBluetoothManager, taBluetoothAdapter, taBluetoothLeScanner, taDiscoveredLEResults & taScanCallback are not null.
+        volatile boolean taIsScanning = false;
+        
+        // Thread for do any plugin work.
+        Handler taHandler;
+        HandlerThread taHandlerThread = null;
+        
+        // GATT server variables: !! MILLISECONDS_WAIT_CALLBACK < MILLISECONDS_WAIT_FUTURE_TASK !!
+        volatile BluetoothGattServer taBluetoothGattServer;
+        volatile BluetoothLeAdvertiser taBluetoothLeAdvertiser;
+        AdvertiseCallback taAdvertiseCallback;
+        volatile boolean taAutoAdvertisments = true;
+        volatile ParcelUuid transferMessagesServiceUUID = null;
+        static final UUID AVAILABLE_SLOT_UUID = UUID.fromString("207b9e88-7dea-11ec-90d6-0242ac120003");
+        static final UUID CLIENT_CONFIG = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+        static final int MAX_TRIES = 5;
+        static final long MILLISECONDS_FOR_SUBSCRIBE = 10 * 1000; // 10 seconds.
+        static final long MILLISECONDS_WAIT_CALLBACK = 1000; 
+        static final long MILLISECONDS_WAIT_FUTURE_TASK = 3000;
+        volatile ArrayList<UUID> taAvailableDeviceSlots = new ArrayList<UUID>();
+        ConcurrentHashMap<CBluetoothDevice, ServerBLEDeviceRecord> taEngagedDeviceSlots = 
+            new ConcurrentHashMap<CBluetoothDevice, ServerBLEDeviceRecord>();
+            // GATT client. All variables are inside the class.
+        volatile CustomGattConnectCallback taGattConnectCallback;
+
+        // Callback c++. See AndroidGateway.cpp for this functions implementation.
+        private static native void printDebugUEMessage(String msg);
+        private static native void cppOnScanResult(String bluetoothDeviceStr);
+        private static native void cppOnScanFinish();
+        private static native void cppOnClientMessage(String bluetoothDeviceStr, String msg);
+        private static native void cppOnNewConnection(String bluetoothDeviceStr);
+        private static native void cppOnConnectionClosed(String bluetoothDeviceStr);
+
+        /** Configuration process of this plugin is simple - you just need to edit this function.
+        * This function is called across the plugin for print debug messages. To disable messaging just delete its body
+        * and make this function do nothing. You should use android.util.Log or printDebugUEMessage.
+        */
+        static final int ERROR = android.util.Log.ERROR;
+        static final int INFO = android.util.Log.INFO;
+        static final int VERBOSE = android.util.Log.VERBOSE;
+        private static void DebugLog(int verbosityLevel, final String message) {
+            final String TAG = "BLEsupport";
+            if (verbosityLevel == ERROR) {
+                android.util.Log.e(TAG, "ERROR: " + message);
+            } else if (verbosityLevel == INFO) {
+                android.util.Log.i(TAG, message);
+            } else if (verbosityLevel == VERBOSE) {
+                android.util.Log.v(TAG, message);
+            }
+        }
+
+
+        /**
+        * ################### Available for all devices plugin interface: ###################
+        * Bluetooth support checks, geolocation & bluetooth enabled checks, 
+        * BLE-support check, bluetooth enabling/disabling, also obtaining Bonded classic bluetooth devices.
+        * Some additional functions: ShowToast, newAsyncTask.
+        * taBluetoothReceiver for autoclosing any tasks.
+        */
+
+
+        /**
+        * If this device have bluetooth. If device API < 18 this is always false. 
+        * Non-blocking operation.
+        * @return True if supported, false otherwise.
+        */
+        public boolean isBluetoothSupported() {
             return (taBluetoothAdapter != null);
         }
 
-        // Simply shows a toast text.
+        /** 
+        * Simply shows a toast text.
+        * Non-blocking operation. All functions here are API level 1.
+        */
         public void ShowToast(final String toast) {
             runOnUiThread(new Runnable() {
                 public void run() {
+                    DebugLog(VERBOSE, "Show toast: " + toast);
                     Toast.makeText(getApplicationContext(), toast, Toast.LENGTH_LONG).show();
                 }
             });
@@ -192,6 +322,7 @@
 
         /**
         * If the geolocation is turned on.
+        * Non-blocking operation. All functions here are API level 1.
         */
         public boolean isGeolocationEnabled() {
             LocationManager lm = (LocationManager)getSystemService(Context.LOCATION_SERVICE);
@@ -201,7 +332,7 @@
                 try {
                     gps_enabled = lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
                 } catch(IllegalArgumentException e) {
-                    // Ignore.
+                    DebugLog(ERROR, "Can't get geolocation - " + e.getMessage());
                 }
             }
 
@@ -209,385 +340,607 @@
         }
 
         /**
-        * ################### Available for all bluetooth-enabled devices ############
-        * The plugin allows some basic bluetooth manipulating for non-supported devices.
-        * I HAVE to make this check before any BLE-related work.
-        * @return whether LE is supported.
-        */
-        public boolean isBluetoothLowEnergySupported()
-        {
-            return getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE);
-        }
-
-        /**
         * If Bluetooth adapter enabled.
-        * @return True if enabled, false otherwise.
+        * Non-blocking operation.
         */
-        public boolean isBluetoothEnabled()
-        {
+        public boolean isBluetoothEnabled() {
             return (taBluetoothAdapter != null && taBluetoothAdapter.isEnabled());
         }
 
         /**
         * Enable bluetooth.
+        * Non-blocking operation.
+        * @return True if Bluetooth Enabling intent started.
         */
-        public void enableBluetooth()
-        {
+        public boolean enableBluetooth() {
             // Displays a dialog requesting user permission to enable Bluetooth.
             // If taBluetoothAdapter is null then device don't have Bluetooth at all.
-            if ( taBluetoothAdapter != null && !taBluetoothAdapter.isEnabled() )
-            {
+            if ( taBluetoothAdapter != null && !taBluetoothAdapter.isEnabled() ) {
                 Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+                DebugLog(INFO, "Enabling bluetooth...");
                 startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+                return true;
             }
+            return false;
         }
 
         /**
-        * Disable bluetooth. 
+        * Disable bluetooth. Will fail if the plugin is running some task (scanning/GattServer/GattClient).
         * !! Bluetooth should never be disabled without direct user consent !!
+        * Non-blocking operation.
+        * @return True if Bluetooth was disabled.
         */
-        public void disableBluetooth()
-        {
-            if (taBluetoothAdapter != null && taBluetoothAdapter.isEnabled())
-                taBluetoothAdapter.disable();
+        public boolean disableBluetooth() {
+            if (taBluetoothAdapter != null && checkGeneralConditions("disableBluetooth()")) {
+                DebugLog(INFO, "Disabling bluetooth...");
+                return taBluetoothAdapter.disable();
+            }
+            return false;
         }
 
-        // Get classic bluetooth bounded devices.
-        public String[] getBluetoothBoundedDevices() {
+        /**
+        * Get classic bluetooth Bonded devices.
+        * Non-blocking operation.
+        */
+        public String[] getBluetoothBondedDevices() {
             if (taBluetoothAdapter != null) {
                 Set<BluetoothDevice> pairedDevices = taBluetoothAdapter.getBondedDevices();
                 if (pairedDevices.size() > 0) {
                     String[] returnDevices = new String[pairedDevices.size()];
                     int i = 0;
                     for (BluetoothDevice device : pairedDevices) {
-                        returnDevices[i] = new CBluetoothDevice(device).stringify();
+                        returnDevices[i] = new CBluetoothDevice(device).stringifyForC();
                         i++;
                     }
                     return returnDevices;
                 }
+            } else {
+                DebugLog(ERROR, "Device don't support bluetooth - in call of getBluetoothBondedDevices() !");
             }
             return new String[]{};
         }
 
-
         /**
-        * ################ LE supported devices API >= 18 scan update ##############
-        * Devices management.
+        * Make this check before any BLE-related work.
+        * Non-blocking operation.
+        * @return Whether LE is supported.
         */
-
-
-        /**
-        * Scan for ANY LE-enabled device within the Bluetooth covered range.
-        */
-        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        public void startLEScan (int scanTimeoutMillisecond, long scanReportDelay)
-        {
-            // If this check fails then getBluetoothLeScanner() returns null. 
-            // If current device don't support bluetooth then isBluetoothEnabled() will be false.
-            if ( !isBluetoothEnabled() || !isBluetoothLowEnergySupported() ) return;
-
-            scanControlSemaphore.acquireUninterruptibly();
-
-            // Prevent user from calling scan multiple times.
-            stopLEScan_safe();
-
-            mScanCallback = new BtleScanCallback();
-            isScanning = true;
-
-            // For this method, list all available devices.
-            taBluetoothLeScanner.startScan(null,
-                    (new ScanSettings.Builder()
-                    .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-                    .setReportDelay(scanReportDelay)
-                    .build()),
-                    mScanCallback);
-
-            mHandler.postDelayed(new ScanStopper(), 0, scanTimeoutMillisecond);
-
-            scanControlSemaphore.release();
+        public boolean isBluetoothLowEnergySupported() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) {
+                return false; // There is no PackageManager.FEATURE_BLUETOOTH_LE string.
+            }
+            return getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE);
         }
 
         /**
-        * Called to scan for LE devices with a provided Service UUID only.
-        * The filtered scan will save unneeded extra treatment especially with
-        * a big number of devices around. It will do nothing if you don't specify any filters.
-        * @param uuid of the service needed.
-        * @param scanTimeoutMillisecond For how many milliseconds should I keep scanning?
-        *                               The loop is better be managed BP-side.
+        * Add callable to a Handler. Log errors. Wait for result if need.
+        * @param callable The callable to add to the Handler.
+        * @param timeout Milliseconds to wait for result. If < 0 then don't wait. If 0 then don't use timeout.
+        * @param defaultValue Value to return if error occured.
+        * @param superCallerFunc The name of function that call us. Used for debug log.
+        * @param mayInterruptIfRunning If true then interrupt the thread that runs the task in case when time is over.
+        * @return Result of the callable. If an error occured, or the time is out, or timeout < 0 then return defaultValue parameter.
+        */
+        private <T> T newAsyncTask(Callable<T> callable, long timeout, boolean mayInterruptIfRunning, 
+                                   T defaultValue, String superCallerFunc) 
+        {
+            FutureTask<T> asyncTask = new FutureTask<T>(callable);
+            if (taHandler == null || !taHandler.post(asyncTask)) {
+                DebugLog(ERROR, "Can't add async task (callable) to the handler in " + superCallerFunc + "!");
+            } else {
+                try {
+                    if (timeout == 0) {
+                        T result = asyncTask.get();
+                        return result;
+                    } else if (timeout > 0) {
+                        T result = asyncTask.get(timeout, TimeUnit.MILLISECONDS);
+                        return result;
+                    }
+                } catch (Exception e) {
+                    // If time is out TimeoutException is thrown.
+                    if (taHandler != null) {
+                        taHandler.removeCallbacks(asyncTask);
+                    }
+                    asyncTask.cancel(mayInterruptIfRunning);
+                    DebugLog(ERROR, "Exception while async task! - " + e.getMessage() + " in " + superCallerFunc + "!");
+                }
+            }
+            return defaultValue;
+        }
+
+        /**
+        * Add runnable to a Handler. Log errors. 
+        * @param runnable The runnable to add to the Handler.
+        * @param superCallerFunc The name of function that call us. Used for debug log.
+        * @return True if the runnable was added to the Handler.
+        */
+        private boolean newAsyncTask(Runnable runnable, String superCallerFunc) {
+            if (taHandler == null || !taHandler.post(runnable)) {
+                DebugLog(ERROR, "Can't add async task (runnable) to the handler in " + superCallerFunc + "!");
+                return false;
+            } 
+            return true;
+        }
+
+        /**
+        * Listens for Bluetooth adapter events to stop tasks when the Bluetooth is disabled.
+        */
+        private BroadcastReceiver taBluetoothReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                final String action = intent.getAction();
+
+                if (action != null && action.equals(BluetoothAdapter.ACTION_STATE_CHANGED)) {
+                    int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1);
+
+                    switch (state) {
+                        case BluetoothAdapter.STATE_OFF:
+                            // User turned off the Bluetooth. We are to stop any tasks as fast as possible:
+                            Runnable instantaneousTask = new Runnable() {
+                                @Override
+                                public void run() {
+                                    // Just copy all runnings bodies from functions (stopBLEGattClient/stopLEScan/stopBLEGattServer):
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2) {
+                                        new BLEGattClientStopper().run();
+                                    }
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                        new ScanStopper(false).run();
+                                        new BLEGattServerStopper().run();
+                                    }
+                                }
+                            };
+
+                            if (taHandler == null || !taHandler.postAtFrontOfQueue(instantaneousTask)) {
+                                DebugLog(ERROR, "Can't add async task to the handler when bluetooth was disabled!");
+                                // Need to run it ourselves:
+                                instantaneousTask.run();
+                            }
+
+                            break;
+                        default:
+                            // Do nothing.
+                    }
+                }
+            }
+        };
+
+        /**
+        * ################ LE scanning interface (need API >= 21): ################
+        * Start/stop scan. Filtered scan. 
+        * Function used across the plugin: checkGeneralConditions().
+        */
+
+
+        /**
+        * If the device is scanning.
+        * Non-blocking operation.
+        */
+        public boolean isScanning() {
+            // taBluetoothLeScanner indicates that the device is BLE supported.
+            if ((taBluetoothLeScanner == null) && taIsScanning) {
+                DebugLog(ERROR, "Why is the device can't scan but is scanning ?");
+            }
+            return taIsScanning;
+        }
+
+        /**
+        * Function checks that all is good for starting any task (scanning/GattServer/GattClient).
+        * Non-blocking operation. 
+        * @param superCallerFunc The name of function that call us. Used for debug log.
+        * @return True if all is good. False if any of tasks already started or bluetooth is disabled/unsupported.
+        */
+        private boolean checkGeneralConditions(String superCallerFunc) {
+            if ( !isBluetoothEnabled() ) {
+                DebugLog(INFO, "Bluetooth is disabled/unsupported => call of " + superCallerFunc + " failed.");
+                return false;
+            }
+            if ( taBluetoothGattServer != null || taBluetoothLeAdvertiser != null ) {
+                DebugLog(INFO, "GATT server or advertising is on => call of " + superCallerFunc + " failed.");
+                return false;
+            }
+            if ( taGattConnectCallback != null) {
+                DebugLog(INFO, "GATT client is running => call " + superCallerFunc + " failed.");
+                return false;
+            }
+            if ( taIsScanning ) {
+                DebugLog(INFO, "Device is scanning => call " + superCallerFunc + " failed.");
+                return false;
+            }
+            return true;
+        }
+
+        /**
+        * Function checks that all is good for starting the scan process.
+        * Non-blocking operation. Used in startLEScan & startFilteredScan only.
+        * @return True if all is good.
+        */
+        private boolean checkScanConditions(int scanTimeoutMillisecond, long scanReportDelay, String funcName) {
+            if ( taBluetoothLeScanner == null ) {
+                DebugLog(INFO, "Pointer taBluetoothLeScanner is null - in call of " + funcName + ".");
+                // If BLE is not supported then scanner is null. See OnCreateAdditions.
+                return false;
+            } 
+            if (scanTimeoutMillisecond <= 0 || scanReportDelay < 0) {
+                // Only this case is actually the mistake of the user.
+                DebugLog(ERROR, "Wrong arguments passed - in call of " + funcName + "!");
+                return false;
+            }
+
+            if ( !isGeolocationEnabled() ) {
+                DebugLog(ERROR, "You may not get any scan results (geolocation is off) - in call of " + funcName + ".");
+                // Stil allow to start scanning because some venders handle this in different ways.
+            }
+
+            return checkGeneralConditions(funcName);
+        }
+
+        /**
+        * Scan for ANY LE-enabled device within the Bluetooth covered range.
+        * Non-blocking operation, but is running on the separate thread.
+        * It will not start scanning if it is already started.
+        * @param scanTimeoutMillisecond For how many milliseconds should I keep scanning? Should be positive.
+        * @param scanReportDelay How othen to report scan results (if 0 then immidiately).
         */
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        public void startFilteredScan (int scanTimeoutMillisecond, long scanReportDelay, final String uuidStr, final String deviceAddr)
-        {
-            // If this check fails then getBluetoothLeScanner() returns null.
-            // If current device don't support bluetooth then isBluetoothEnabled() will be false.
-            if ( !isBluetoothEnabled() || !isBluetoothLowEnergySupported() ) return;
+        public void startLEScan (final int scanTimeoutMillisecond, final long scanReportDelay) {
+            Runnable newTask = new Runnable() {
+                @Override
+                public void run() {
+                    // taBluetoothLeScanner was set in OnCreateAdditions & may be null in case the device don't have BLE protocol.
+                    if (!checkScanConditions(scanTimeoutMillisecond, scanReportDelay, "startLEScan()")) return;
 
-            ScanFilter scanFilter = null;
-            // We allow both uuid and deviceAddr to be filtered.
+                    taScanCallback = new BtleScanCallback();
+                    taIsScanning = true;
+
+                    // For this method, list all available devices.
+                    taBluetoothLeScanner.startScan(null,
+                            (new ScanSettings.Builder()
+                            .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                            .setReportDelay(scanReportDelay)
+                            .build()),
+                            taScanCallback);
+
+                    if (taHandler == null || !taHandler.postAtTime(new ScanStopper(true), 
+                                                                 0, 
+                                                                 SystemClock.uptimeMillis() + scanTimeoutMillisecond)) 
+                    {
+                        DebugLog(ERROR, "Can't add ScanStopper to the handler!");
+                        // Use postAtTime instead of postDelayed because of postDelayed version with token was added in API 28. ):
+                        stopLEScan_safe(false);
+                    }
+                }
+            };
+
+            newAsyncTask(newTask, "startLEScan()");
+        }
+
+        /**
+        * Called to scan for LE devices with a provided Service UUID only or with a specified address.
+        * It will do nothing if you don't specify any filters or if scanning already started. 
+        * See version without filter for more comments.
+        * Non-blocking operation, but is running on the separate thread.
+        * @param scanReportDelay May be zero.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public void startFilteredScan (final int scanTimeoutMillisecond, 
+                                       final long scanReportDelay, 
+                                       final String uuidStr, 
+                                       final String deviceAddr)
+        {
+            // We allow both uuid and deviceAddr to be filtered. Firstly check that filters are valid.
+            ScanFilter inScanFilter = null;
             try {
                 ScanFilter.Builder scanFilterBuilder = new ScanFilter.Builder();
 
-                if (!uuidStr.equals(""))
-                {
+                if (!uuidStr.equals("")) {
                     // We only want to scan for devices advertising our custom service.
                     UUID uuid = UUID.fromString(uuidStr);
 
                     scanFilterBuilder = scanFilterBuilder.setServiceUuid(new ParcelUuid(uuid));
                 }
 
-                if (!deviceAddr.equals(""))
-                {
+                if (!deviceAddr.equals("")) {
                     scanFilterBuilder = scanFilterBuilder.setDeviceAddress(deviceAddr);
                 }
 
-                // Building a scanFilter itself.
-                if (!uuidStr.equals("") || !deviceAddr.equals("")) 
-                {
-                    scanFilter = scanFilterBuilder.build();
+                // Building a inScanFilter itself.
+                if (!uuidStr.equals("") || !deviceAddr.equals("")) {
+                    inScanFilter = scanFilterBuilder.build();
                 }
-            } catch (IllegalArgumentException illArgExc)
-            {
-                // Ignore.
+            } catch (IllegalArgumentException e) {
+                DebugLog(ERROR, "Can't start filtered scan - " + e.getMessage());
             }
 
-            if (scanFilter == null ) return;
+            if (inScanFilter == null ) {
+                DebugLog(INFO, "Scan filter not set.");
+                return;
+            }
 
-            scanControlSemaphore.acquireUninterruptibly();
+            final ScanFilter scanFilter = inScanFilter;
 
-            // Prevent user from calling scan multiple times.
-            stopLEScan_safe();
+            // Create the task and put it into the handler. Actually here we copy startLEscan body but with filters.
+            Runnable newTask = new Runnable() {
+                @Override
+                public void run() {
+                    if (!checkScanConditions(scanTimeoutMillisecond, scanReportDelay, "startFilteredScan()")) return;
 
-            mScanCallback = new BtleScanCallback();
-            isScanning = true;
+                    taScanCallback = new BtleScanCallback();
+                    taIsScanning = true;
 
-            taBluetoothLeScanner.startScan(Arrays.asList(scanFilter),
-                    (new ScanSettings.Builder()
-                    .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-                    .setReportDelay(scanReportDelay)
-                    .build()),
-                    mScanCallback);
+                    taBluetoothLeScanner.startScan(Arrays.asList(scanFilter),
+                            (new ScanSettings.Builder()
+                            .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
+                            .setReportDelay(scanReportDelay)
+                            .build()),
+                            taScanCallback);
 
-            mHandler.postDelayed(new ScanStopper(), 0, scanTimeoutMillisecond);
+                    if (taHandler == null || !taHandler.postAtTime(new ScanStopper(true), 
+                                                                   0, 
+                                                                   SystemClock.uptimeMillis() + scanTimeoutMillisecond)) 
+                    {
+                        DebugLog(ERROR, "Can't add ScanStopper to the handler!");
+                        // We can scan forever, so stop scanning immidiately:
+                        stopLEScan_safe(false);
+                    }
+                }
+            };
 
-            scanControlSemaphore.release();
+            newAsyncTask(newTask, "startFilteredScan()");
         }
 
+        /**
+        * Used internally. 
+        * Non-blocking operation.
+        * @param callCpp If to call c++ callback in case the scanning actually finished.
+        * @return True if it was scanning, false otherwise.
+        */
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        private boolean stopLEScan_safe()
-        {
-            // Stop countdown immidiately. We used token 0 for all ScanStoppers.
-            mHandler.removeCallbacksAndMessages(0);
+        private boolean stopLEScan_safe(boolean callCpp) {
+            // Stop countdown immidiately. We used token 0 for all ScanStoppers 
+                // (with the exception of that were added with public scanning stop method).
+            if (taHandler != null) {
+                taHandler.removeCallbacksAndMessages(0);
+            }
 
-            if (isScanning)
-            {
-                taBluetoothLeScanner.stopScan(mScanCallback);
-                mScanCallback = null;
-                isScanning = false;
+            if (taIsScanning && taBluetoothLeScanner != null) {
+                DebugLog(VERBOSE, "Scan stop in safe function.");
+                if (taScanCallback != null) {
+                    taBluetoothLeScanner.stopScan(taScanCallback);
+                } else {
+                    DebugLog(ERROR, "Why device is scanning, but taScanCallback is null ?");
+                }
+                taScanCallback = null;
+                taIsScanning = false;
+                if (callCpp) {
+                    DebugLog(VERBOSE, "C++ callback - scan finished.");
+                    cppOnScanFinish();
+                }
                 return true;
             }
             return false;
         }
         
+        /**
+        * Non-blocking operation. 
+        * Calling the stopLEScan_safe in separate thread.
+        * If it was scanning then call c++.
+        */
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        public void stopLEScan()
-        {
-            scanControlSemaphore.acquireUninterruptibly();
-            boolean reallyStopped = stopLEScan_safe();
-            scanControlSemaphore.release();
-            if (reallyStopped) {
-                scanNativeFinishedCallback();
-            }
+        public void stopLEScan() {
+            newAsyncTask(new ScanStopper(false), "stopLEScan()");
         }
 
         /**
-        * If the device is scanning.
-        */
-        public boolean isScanning()
-        {
-            return isScanning;
-        }
-
-        /**
-        * Implement methods to deliver BLE scan results (ScanCallback is abstract class).
+        * Implement methods to deliver BLE scan results.
+        * Just run addScanResult() for any new result. No blocking operations.
         */
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        private class BtleScanCallback extends ScanCallback
-        {
+        private class BtleScanCallback extends ScanCallback {
             @Override
-            public void onScanResult(int callbackType, ScanResult result)
-            {
-                // Delaying results of scan and getting a batch of results instead of a callback fuss.
-                // This callback will never be called with delay.
+            public void onScanResult(int callbackType, ScanResult result) {
+                // This callback will never be called if scanReportDelay is > 0.
+                DebugLog(VERBOSE, "onScanResult callback, type is : " + callbackType);
                 addScanResult(result);
             }
 
             @Override
-            public void onBatchScanResults(List<ScanResult> results)
-            {
-                // Go through the list of devices
-                // with filters, I might get only one result. Stays valid.
-                for (ScanResult result : results)
-                {
+            public void onBatchScanResults(List<ScanResult> results) {
+                DebugLog(VERBOSE, "onBatchScanResults callback, size is : " + results.size());
+                for (ScanResult result : results) {
                     addScanResult(result);
                 }
             }
 
             @Override
-            public void onScanFailed(int errorCode)
-            {
-                // TODO: Create a more good error handling. (maybe calling printDebugUEMessage or Log.e?)
+            public void onScanFailed(int errorCode) {
+                DebugLog(ERROR, "Scan failed, code is : " + errorCode);
             }
         }
 
-        /**
-        * Connecting to a GATT server.
-        * This is called manually from blueprint. The connection requires device's address.
+        /** 
+        * Class for stopping scanning process (just call stopLEScan_safe() with cpp callback).
         */
-        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-        public void connectGattDevice(String deviceAddr)
-        {
-            if (isBluetoothEnabled()) {
-                TaGattConnectCallback taGattConnectCallback = new TaGattConnectCallback();
-                BluetoothDevice device = taBluetoothAdapter.getRemoteDevice(deviceAddr);
-                taConnectGattDevice = device.connectGatt(getApplicationContext(), false, taGattConnectCallback);
-            }
-        }
-
-        /** Class for stopping scanning process.
-        */
-        private class ScanStopper implements Runnable {
-            @Override
-            public void run()
-            {
-                stopLEScan();
-            }
-        }
-
-        /**
-        * ############################### SCAN, CONNECTION CALLBACKS ########################
-        */
-        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
-        private class TaGattConnectCallback extends BluetoothGattCallback
-        {
-            @Override
-            public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState)
-            {
-                super.onConnectionStateChange(gatt, status, newState);
-            }
-
-            @Override
-            public void onServicesDiscovered(BluetoothGatt gatt, int status)
-            {
-                super.onServicesDiscovered(gatt, status);
-            }
-        }
-
         @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-        private void addScanResult(ScanResult result)
-        {
-            if (result == null || result.getDevice() == null || result.getDevice().getName() == null) {
-                // This result is incomplete or invalid.
+        private class ScanStopper implements Runnable {
+            // If the running was called after time delay. Used just for logging.
+            private boolean isTimeOut = false;
+
+            ScanStopper(boolean isTimeOut) { this.isTimeOut = isTimeOut; }
+
+            @Override
+            public void run() {
+                if (isTimeOut) {
+                    DebugLog(VERBOSE, "Scan stop due to time is out.");
+                }
+                stopLEScan_safe(true);
+            }
+        }
+
+
+        /**
+        * ################ Discovered devices access interface: ################
+        * Add discovered device. Get & clear devices array.
+        * CBluetoothDevice class implementation.
+        */
+
+
+        /** 
+        * Check for a valid result. Add discovered device or update the existing record. Call c++ callback.
+        * We use concurrent type of array so we don't need to block here anything.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        private void addScanResult(ScanResult result) {
+            if (result == null || result.getDevice() == null || result.getDevice().getName() == null || result.getDevice().getAddress() == null) 
+            {
+                // This result is incomplete or invalid. I don't know why this is happening, but in my experience such results may occur.
+                DebugLog(VERBOSE, "Invalid result in addScanResult().");
+                // Even make this to VERBOSE message, because it's happening too often.
                 return;
             }
             CBluetoothDevice currentDevice = new CBluetoothDevice(result);
 
-            // Instead of just discoveredLEResults.add(currentDevice); we firstly check if the device is already in array.
-            LEResultsAccessSemaphore.acquireUninterruptibly();
-            boolean alreadyInArray = false;
-            for (CBluetoothDevice device : discoveredLEResults) {
-                if (device.equals(currentDevice)) {
-                    device.lastDiscovery = new Date().getTime();
-                    alreadyInArray = true;
-                    break;
-                }
-            }
+            // We can't do the updating 'last discovery time' thread-safetly, so we firstly remove the device and then add it back.
 
-            if (!alreadyInArray) {
-                discoveredLEResults.add(currentDevice);
-            }
-            LEResultsAccessSemaphore.release();
+            taDiscoveredLEResults.remove(currentDevice);
+            taDiscoveredLEResults.addIfAbsent(currentDevice);
 
-            // See AndroidGateway.cpp for this function implementation.
-            scanNativeResultCallback(currentDevice.stringify()); 
+            DebugLog(VERBOSE, "C++ callback. Device result: " + currentDevice.stringify_short());
+            cppOnScanResult(currentDevice.stringifyForC()); 
         }
 
         /**
-        * This is really important to adapt returned data (array of results) to C++ compatible list.
+        * Adapt returned data (array of results) to C++ compatible list.
+        * Non-blocking operation.
         */
-        public String[] getDiscoveredDevices()
-        {
-            if ( discoveredLEResults != null )
-            {
-                LEResultsAccessSemaphore.acquireUninterruptibly();
-                String[] discoveredLEResultsArr = new String[discoveredLEResults.size()];
+        public String[] getDiscoveredDevices() {
+            if ( taDiscoveredLEResults != null ) {
+                // There may be changes of the taDiscoveredLEResults during this function but the iteration is thread-safe.
+                ArrayList<String> devices = new ArrayList<String>(taDiscoveredLEResults.size());
                 
-                for (int count = 0; count < discoveredLEResults.size(); count++)
-                    discoveredLEResultsArr[count] = discoveredLEResults.get(count).stringify();
-
-                LEResultsAccessSemaphore.release();
-                return discoveredLEResultsArr;
+                Iterator<CBluetoothDevice> iterator = taDiscoveredLEResults.iterator();
+                while ( iterator.hasNext() ) {
+                    devices.add(iterator.next().stringifyForC());
+                }
+                return devices.toArray(new String[devices.size()]);
             }
-
+            DebugLog(INFO, "Discovered results are null.");
             return new String[]{};
         }
 
-        public void clearDiscoveredDevices()
-        {
-            if ( discoveredLEResults != null ) { 
-                LEResultsAccessSemaphore.acquireUninterruptibly();
-                discoveredLEResults.clear();
-                LEResultsAccessSemaphore.release();
-            }
+        /** 
+        * Release memory. Allowing to start the scanning with a clean face.
+        * Non-blocking operation. Running on separate thread.
+        */
+        public void clearDiscoveredDevices() {
+            // We need to run this on separate thread, so when connecting to GATT server the array won't become empty unexpectedly.
+            Runnable newTask = new Runnable() {
+                @Override
+                public void run() {
+                    if ( taDiscoveredLEResults != null ) { 
+                        taDiscoveredLEResults.clear();
+                    }
+                }
+            };
+
+            newAsyncTask(newTask, "clearDiscoveredDevices()");
         }
 
-        // This class will help in the passing of Objects via JNI.
-        class CBluetoothDevice
-        {
-            BluetoothDevice thisDevice;
+        /**
+        * This class will help in the passing of Objects via JNI.
+        * We can use representation string instead of BluetoothDevice 
+        * in order to create a temporary device and use it just for comparing.
+        */
+        private static class CBluetoothDevice implements Comparable<CBluetoothDevice> {
+            private BluetoothDevice thisDevice = null;
+            private String representation = null;
 
             // BLE:
-            int     rssi = -200;
-            long    lastDiscovery = 0;
+            private int     rssi = -200;
+            private long    lastDiscovery = 0;
 
             // API >= 26 variables:
-            int     periodicAdvertisingInterval = -200;
-            int     txPower = -200;
-            boolean isConnectable = false;
+            private int     periodicAdvertisingInterval = -200;
+            private int     txPower = -200;
+            private boolean isConnectable = false;
 
             // Was scanned with BLE.
-            CBluetoothDevice(ScanResult scanObject)
-            {
+            @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+            CBluetoothDevice(ScanResult scanObject) {
                 this.thisDevice = scanObject.getDevice();
                 this.rssi = scanObject.getRssi();
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
-                {
-                    // Whewn API level >= 26 we can access more parameters.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    // When API level >= 26 we can access more parameters.
                     this.txPower = scanObject.getTxPower();
                     this.periodicAdvertisingInterval =  scanObject.getPeriodicAdvertisingInterval();
                     this.isConnectable = scanObject.isConnectable();
                 }
                 lastDiscovery = new Date().getTime();
+                // Its very important to run this line AFTER thisDevice field was initialized:
+                this.representation = this.stringify_short();
             }
 
             // Classic bluetooth.
-            CBluetoothDevice(BluetoothDevice device)
-            {
+            CBluetoothDevice(BluetoothDevice device) {
                 this.thisDevice = device;
+                this.representation = this.stringify_short();
+            }
+
+            // Temporary object.
+            CBluetoothDevice(String representation) {
+                if (representation == null) {
+                    DebugLog(ERROR, "Creating temporary device with null representation!");
+                    representation = "";
+                }
+                this.thisDevice = null;
+                this.representation = representation;
             }
 
             public String getName() {
-                return this.thisDevice.getName();
+                if (!isTemporary()) {
+                    return this.thisDevice.getName();
+                } else {
+                    int index = representation.indexOf("|");
+                    if (index == -1) {
+                        DebugLog(ERROR, "Device representation is invalid. - getName()");
+                        return null;
+                    }
+                    return representation.substring(0, index);
+                }
             }
 
             public String getAddress() {
-                return this.thisDevice.getAddress();
+                if (!isTemporary()) {
+                    return this.thisDevice.getAddress();
+                } else {
+                    int index = representation.indexOf("|");
+                    if (index == -1) {
+                        DebugLog(ERROR, "Device representation is invalid. - getAddress()");
+                        return null;
+                    }
+                    return representation.substring(index + 1);
+                }
+            }
+
+            public BluetoothDevice getDevice() {
+                if (!isTemporary()) {
+                    return this.thisDevice;
+                } else {
+                    DebugLog(ERROR, "Get device pointer of the temporary device.");
+                    return null;
+                }
+            }
+
+            public boolean isTemporary() {
+                return (this.thisDevice == null);
             }
 
             // This string we pass to c++.
-            public String stringify()
-            {
-                return ("" + getName() + 
-                        "|" + getAddress() + 
+            public String stringifyForC() {
+                if (isTemporary()) {
+                    DebugLog(ERROR, "Passing temporary device to c++.");
+                }
+
+                return (stringify_short() + 
                         "|" + rssi + 
                         "|" + periodicAdvertisingInterval + 
                         "|" + txPower + 
@@ -595,10 +948,1235 @@
                         "|" + lastDiscovery);
             }
 
-            // For addScanResult function.
-            public boolean equals(CBluetoothDevice other) {
-                return (this.getName().equals(other.getName()) && this.getAddress().equals(other.getAddress()));
+            // For comparing.
+            public String stringify_short() {
+                return (representation != null) ? representation : (getName() + "|" + getAddress());
             }
+
+            @Override
+            public boolean equals(Object o) {
+                if (o == this) return true;
+                if (o == null) return false;
+                if (!(o instanceof CBluetoothDevice)) return false;
+
+                CBluetoothDevice other = (CBluetoothDevice)o;
+                return (this.compareTo(other) == 0);
+            }
+
+            // Allow to make a set or map of these objects.
+            @Override
+            public int compareTo(CBluetoothDevice other) {
+                if (other == null) {
+                    DebugLog(ERROR, "CBluetoothDevice - Compare to null is not allowed.");
+                    return 1; // I don't know what to return here.
+                }
+                return this.stringify_short().compareTo(other.stringify_short());
+            }
+
+            @Override
+            public int hashCode() {
+                return this.stringify_short().hashCode();
+            }
+        }
+
+
+        /**
+        * ################ GATT server interface: ################
+        * ServerBLEDeviceRecord class. createBLEGattServer function.
+        * Service creator, UuidUtils for additional functions for UUID. Function for 
+        * testing if bytes array is 0-filled. CustomGattServerCallback implementation. 
+        * Function for checking if server (advertisments) is running. Obtaining BLE connected
+        * devices. Sending BLE messages & receiving BLE messages. Resume (autoresume) advertisments.
+        */
+
+
+        /**
+        * Class representing the connected to the GATT service device.
+        */
+        private static class ServerBLEDeviceRecord {
+            public UUID uuid;
+            public boolean subscribed;
+            public List<byte[]> longMessage;
+
+            ServerBLEDeviceRecord(final UUID uuid, boolean subscribed) {
+                this.uuid = uuid;
+                this.subscribed = subscribed;
+                this.longMessage = new ArrayList<byte[]>();
+            }
+        }
+
+        /**
+        * Create a GATT server with a custom service.
+        * @return True if the GATT server successfully created and advertisments are running. 
+        * Blocking operation. Will wait up to MILLISECONDS_WAIT_FUTURE_TASK milliseconds.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public boolean createBLEGattServer(final String transferServiceUUID, final int maxConnections) {
+            // Make immidiate checks and create on-the-fly objects.
+            if (maxConnections <= 0) {
+                DebugLog(ERROR, "Wrong arguments passed when creating a GATT server!");
+                return false;
+            }
+
+            final ParcelUuid formattedUUID;
+            try {
+                formattedUUID = new ParcelUuid(UUID.fromString(transferServiceUUID));
+            } catch(IllegalArgumentException e) {
+                DebugLog(ERROR, "Wrong arguments passed when creating a GATT server (uuid)! " + e.getMessage());
+                return false;
+            }
+
+            // Task itself:
+            Callable<Boolean> newTask = new Callable<Boolean>() {
+                @Override
+                public Boolean call() throws Exception {
+                    if (!checkGeneralConditions("createBLEGattServer()") || !isBluetoothLowEnergySupported()) {
+                        return false;
+                    } 
+                    // Now can access taBluetoothManager & taBluetoothAdapter - they are not null.
+
+                    // Create the GATT:
+                    taBluetoothGattServer = taBluetoothManager.openGattServer(getApplicationContext(), 
+                                                new CustomGattServerCallback(formattedUUID));
+                    if (taBluetoothGattServer != null) {
+                        taBluetoothGattServer.addService(createTransferMessagesService(formattedUUID, maxConnections));
+                    } else {
+                        DebugLog(ERROR, "GATT server create error!");
+                        return false;
+                    }
+
+                    // Start advertising... (its blocking operation and may wait up to MILLISECONDS_WAIT_CALLBACK);
+                    boolean successfullyAdvertiseStart = resumeAdvertisments_safe(MILLISECONDS_WAIT_CALLBACK);
+
+                    if (!successfullyAdvertiseStart) {
+                        // Advertisement failed, but GATT server successfully created. Close it.
+                        taBluetoothGattServer.close();
+                        taBluetoothGattServer = null;
+                        return false;
+                    }
+
+                    return true;
+                }
+            };
+
+            // MILLISECONDS_WAIT_FUTURE_TASK - how many wait, true - if to interrupt the thread.
+            return newAsyncTask(newTask, MILLISECONDS_WAIT_FUTURE_TASK, true, new Boolean(false), "createBLEGattServer()").booleanValue();
+        }
+
+        /**
+        * Start advertisments assuming GATT server is on, bluetooth is enabled & BLE is supported.
+        * Blocking operation. Running on this thread.
+        * Please, think twice before passing 0 as timeout (it may block forever).
+        * @param semaphoreTimeout How many milliseconds to wait for advertising to start?
+        *   if 0 then don't use timeout.
+        * @return True if advertising is started.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        private boolean resumeAdvertisments_safe(long semaphoreTimeout) {
+            if (semaphoreTimeout < 0) {
+                DebugLog(ERROR, "Semaphore timeout is negative in resume advertisments!");
+                return false;
+            }
+            
+            taBluetoothLeAdvertiser = taBluetoothAdapter.getBluetoothLeAdvertiser();
+            if (taBluetoothLeAdvertiser == null) {
+                DebugLog(ERROR, "Can't get advertiser via Bluetooth adapter!");
+                return false;
+            }
+
+            // Settings of the advertising...
+            final AdvertiseSettings settings = new AdvertiseSettings.Builder()
+                .setConnectable(true)
+                .setTimeout(0)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+                .build();
+
+            final AdvertiseData data = new AdvertiseData.Builder()
+                .setIncludeDeviceName(true)
+                .setIncludeTxPowerLevel(false)
+                .addServiceUuid(getTransferMessagesServiceUUID())
+                .build();
+
+            // We will wait until the advertising is established by this semaphore.
+            final Semaphore advertiseSemaphore = new Semaphore(0);
+            // With atomic reference we can solve "Local variable defined in an enclosing scope" problem.
+            final AtomicReference<Boolean> advertiseCallbackResult = new AtomicReference<Boolean>(false);
+
+            taAdvertiseCallback = new AdvertiseCallback() {
+                @Override
+                public void onStartSuccess(AdvertiseSettings settingsInEffect) {
+                    advertiseCallbackResult.set(true);
+                    DebugLog(VERBOSE, "AdvertiseCallback success. Releasing Semaphore...");
+                    advertiseSemaphore.release();
+                }
+        
+                @Override
+                public void onStartFailure(int errorCode) {
+                    DebugLog(ERROR, "AdvertiseCallback fail, code : " + errorCode + ". Releasing Semaphore...");
+                    advertiseSemaphore.release();
+                }
+            };
+
+            taBluetoothLeAdvertiser.startAdvertising(settings, data, taAdvertiseCallback);
+
+            try {
+                if (semaphoreTimeout > 0) {
+                    if (!advertiseSemaphore.tryAcquire(semaphoreTimeout, TimeUnit.MILLISECONDS)) {
+                        throw new TimeoutException(String.format("Time out after %d milliseconds!", semaphoreTimeout));
+                    }
+                } else {
+                    advertiseSemaphore.acquire();
+                }
+                // Acquire was successful. Check results:
+                if (!advertiseCallbackResult.get()) {
+                    throw new InterruptedException("Advertisment start fail...");
+                }
+            } catch (InterruptedException|TimeoutException e) {
+                DebugLog(ERROR, "Exception while advertiseSemaphore is acquired - " + e.getMessage());
+                if (taBluetoothLeAdvertiser != null && taAdvertiseCallback != null) {
+                    taBluetoothLeAdvertiser.stopAdvertising(taAdvertiseCallback);
+                }
+                taBluetoothLeAdvertiser = null;
+                taAdvertiseCallback = null;
+                return false;
+            }
+            
+            return true;
+        } // resumeAdvertisments_safe function end.
+            
+        /**
+        * GATT service creation. Create elements in taAvailableDeviceSlots, assign random UUID.
+        * This function used internally to create GATT server.
+        * Non-blocking operation.
+        * @return Created service.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        private BluetoothGattService createTransferMessagesService(final ParcelUuid ServiceUUID, int maxConnections) {
+            BluetoothGattService service = new BluetoothGattService(ServiceUUID.getUuid(),
+                    BluetoothGattService.SERVICE_TYPE_PRIMARY);
+            
+            // This value is used as the UUID of the characteristic that the connected device should use for messages transfer.
+            BluetoothGattCharacteristic availableSlot = new BluetoothGattCharacteristic(AVAILABLE_SLOT_UUID,
+                BluetoothGattCharacteristic.PROPERTY_READ,
+                BluetoothGattCharacteristic.PERMISSION_READ);
+            service.addCharacteristic(availableSlot);
+    
+            taEngagedDeviceSlots.clear();
+            taAvailableDeviceSlots.clear();
+            for (int i = 0; i < maxConnections; i++) {
+                UUID currentUUID = UUID.randomUUID();
+                // If this is the first then set up the availableSlot characteristic.
+                if (i == 0) {
+                    availableSlot.setValue(UuidUtils.asBytes(currentUUID));
+                }
+
+                taAvailableDeviceSlots.add(currentUUID);
+
+                BluetoothGattCharacteristic pipeForDevice = new BluetoothGattCharacteristic(currentUUID,
+                        (BluetoothGattCharacteristic.PROPERTY_READ | BluetoothGattCharacteristic.PROPERTY_INDICATE | 
+                        BluetoothGattCharacteristic.PROPERTY_WRITE),
+                        BluetoothGattCharacteristic.PERMISSION_READ | BluetoothGattCharacteristic.PERMISSION_WRITE);
+                BluetoothGattDescriptor pipeDescriptor = new BluetoothGattDescriptor(CLIENT_CONFIG,
+                        BluetoothGattDescriptor.PERMISSION_READ | BluetoothGattDescriptor.PERMISSION_WRITE);
+                pipeForDevice.addDescriptor(pipeDescriptor);
+    
+                service.addCharacteristic(pipeForDevice);
+            }
+            
+            return service;
+        }
+
+        /**
+        * Convert UUID to bytes array and back. Used internally when setting/getting the characteristic.
+        * All operations are non-blocking.
+        */
+        private static final class UuidUtils {
+            private UuidUtils() {} // This class is only for methods.
+
+            public static UUID asUuid(byte[] bytes) {
+                if (bytes.length != 16) {
+                    DebugLog(ERROR, "Converting bytes of non-16 length!");
+                    return new UUID(0, 0);
+                }
+                ByteBuffer bb = ByteBuffer.wrap(bytes);
+                long firstLong = bb.getLong();
+                long secondLong = bb.getLong();
+                return new UUID(firstLong, secondLong);
+            }
+            
+            public static byte[] asBytes(UUID uuid) {
+                ByteBuffer bb = ByteBuffer.wrap(new byte[16]);
+                bb.putLong(uuid.getMostSignificantBits());
+                bb.putLong(uuid.getLeastSignificantBits());
+                return bb.array();
+            }
+        }
+
+        /** 
+        * Check that there are only zero bytes in the array.
+        * Used internally to check if characteristic is zero.
+        * Non-blocking operation.
+        */
+        private boolean byteArrayAllZero(final byte[] array) {
+            for (byte b : array) {
+                if (b != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+        * Used internally to safetly get UUID. Actually used in resumeAdvertisments_safe() function.
+        * Non-blocking operation.
+        */
+        private ParcelUuid getTransferMessagesServiceUUID() {
+            if (transferMessagesServiceUUID == null || taBluetoothGattServer == null) {
+                DebugLog(ERROR, "Obtaining UUID when server is down!");
+                return null;
+            }
+            return transferMessagesServiceUUID;
+        }
+
+        /**
+        * Get the characteristic by uuid with checking all pointers across the way. Used internally.
+        * Non-blocking operation.
+        */
+        private BluetoothGattCharacteristic getCharacteristic(UUID uuid) {
+            if (getTransferMessagesServiceUUID() == null) {
+                return null;
+            }
+            BluetoothGattService service = taBluetoothGattServer.getService(getTransferMessagesServiceUUID().getUuid());
+            if (service == null) {
+                DebugLog(ERROR, "GATT service pointer is null!");
+                return null;
+            }
+            return service.getCharacteristic(uuid);
+        }
+
+        /** 
+        * When we don't pass any parameters that means we want the one definit characteristic.
+        * Non-blocking operation.
+        */
+        private BluetoothGattCharacteristic getCharacteristic() {
+            return getCharacteristic(AVAILABLE_SLOT_UUID);
+        }
+
+        /**
+        * GATT server implementation.
+        * Every callback is registered and executed on the separate thread.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        private class CustomGattServerCallback extends BluetoothGattServerCallback {
+            /** There are 2 definitions of connected device: the first one is common:
+            * device is connected when we run connectGatt and get SUCCESS code in onConnectionStateChange.
+            * The second one is used to let UE world use our functions: the connected device in this way is 
+            * such a device that was registered (it means connected in the first definition, added to a taEngagedDeviceSlots)
+            * and subcribed (it means set notify events). If these 2 conditions are true then the device is connected 
+            * and we let UE world to control it (send messages/ receive messages/ close connection).
+            *
+            * You should understand the conditions. For example, if the device is registered but not subscribed then UE will not
+            * get any info about the device!
+            */
+
+            CustomGattServerCallback(final ParcelUuid UUIDstring) {
+                // Set global UUID.
+                transferMessagesServiceUUID = UUIDstring;
+            }
+
+            // Used in this class to add tasks to the Handler and send responses if adding failed.
+            private void addAsyncTaskWithResponse(Runnable r, final BluetoothDevice device, 
+                                                  final int requestId, final String superCallerFunc) 
+            {
+                if (!newAsyncTask(r, superCallerFunc)) {
+                    // Just send fail message.
+                    if (taBluetoothGattServer != null) {
+                        taBluetoothGattServer.sendResponse(device,
+                            requestId,
+                            BluetoothGatt.GATT_FAILURE,
+                            0,
+                            null);
+                    }
+                }
+            }
+
+            // If device was connected and it disconnect then release its UUID.
+            @Override
+            public void onConnectionStateChange(final BluetoothDevice device, final int status, final int newState) {
+                super.onConnectionStateChange(device, status, newState);
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    DebugLog(ERROR, "Connection state error, device: " + currentDevice.stringify_short() + 
+                                    ", status: " + status + 
+                                    ", newState: " + newState);
+                }
+
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (taBluetoothGattServer == null) {
+                            DebugLog(VERBOSE, "The server is down in onConnectionStateChange().");
+                            // When you close the server then taBluetoothGattServer immidiately become null.
+                            // But devices may still disconnect[ing].
+                            return;
+                        }
+                        BluetoothGattCharacteristic availableSlot = getCharacteristic();
+                        if (availableSlot == null) {
+                            DebugLog(ERROR, "Availible slot is null!");
+                            return;
+                        }
+
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+
+                        if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                            // Even if there was an error, we need to release uuid.
+                            if (registeredDevice != null) {
+                                // The device was registered and we have new free uuid.
+                                taEngagedDeviceSlots.remove(currentDevice);
+                                taAvailableDeviceSlots.add(registeredDevice.uuid);
+                                if (byteArrayAllZero(availableSlot.getValue())) {
+                                    // Set to new available uuid.
+                                    availableSlot.setValue(UuidUtils.asBytes(registeredDevice.uuid));
+                                    // New free slot occured. AutoAdvertisments:
+                                    if (taAutoAdvertisments && taBluetoothLeAdvertiser == null && taAdvertiseCallback == null) {
+                                        if (isBluetoothEnabled() && isBluetoothLowEnergySupported()) {
+                                            if (!taIsScanning) {
+                                                DebugLog(INFO, "Auto advertising : turning on (new free uuid arrived)...");
+                                                // We do not want to block here, so use timeout.
+                                                if (resumeAdvertisments_safe(MILLISECONDS_WAIT_CALLBACK)) {
+                                                    DebugLog(INFO, "Auto advertising : turned on.");
+                                                }
+                                            } else {
+                                                DebugLog(INFO, "Auto advertising : fail (scanning is running) !");
+                                            }
+                                        } else {
+                                            DebugLog(INFO, "Auto advertising : fail (bluetooth disabled) !");
+                                        }
+                                    }
+                                }
+
+                                // Device is disconnected only in case it was connected (it means subscribed).
+                                if (registeredDevice.subscribed) {
+                                    DebugLog(VERBOSE, "C++ callback - device disconnected: " + currentDevice.stringify_short());
+                                    cppOnConnectionClosed(currentDevice.stringifyForC());
+                                }
+                            }
+                            // Remove connection closers assigned to this device since the device already disconnected.
+                            if (taHandler != null) {
+                                taHandler.removeCallbacksAndMessages(getToken(currentDevice));
+                            }
+                        } else if (newState == BluetoothProfile.STATE_CONNECTED && registeredDevice == null && 
+                                   status == BluetoothGatt.GATT_SUCCESS) 
+                        {
+                            // Give him some time to register & subscribe, otherwise close the connection:
+                            if (taHandler == null || !taHandler.postAtTime(new BLEGattServerConnectionCloser(currentDevice), 
+                                                                            getToken(currentDevice), 
+                                                                            SystemClock.uptimeMillis() + MILLISECONDS_FOR_SUBSCRIBE)) 
+                            {
+                                DebugLog(ERROR, "Cancel connection because can't add BLEGattServerConnectionCloser to the handler!");
+                                taBluetoothGattServer.cancelConnection(device);
+                            }
+                        } else if (status != BluetoothGatt.GATT_SUCCESS) {
+                            DebugLog(VERBOSE, "Cancel connection due BLE error...");
+                            taBluetoothGattServer.cancelConnection(device);
+                        }
+                    }
+                };
+
+                newAsyncTask(newTask, "onConnectionStateChange()");
+            }
+
+            // Control requests reads. If uuid is AVAILABLE_SLOT_UUID then register new device.
+            // UUID are the size of 16 bytes so they must be readed by one call of this function.
+            @Override
+            public void onCharacteristicReadRequest(final BluetoothDevice device, final int requestId, final int offset,
+                                                    final BluetoothGattCharacteristic characteristic) 
+            {
+                super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        BluetoothGattCharacteristic availableSlot = getCharacteristic();
+                        if (availableSlot == null) {
+                            DebugLog(ERROR, "Availible slot is null!");
+                            return;
+                        }
+
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+
+                        if (AVAILABLE_SLOT_UUID.equals(characteristic.getUuid()) && offset == 0) {
+                            // Device want to transfer messages. If it already registered or if max connections hit we send failure.
+                            byte[] availableSlotValue = availableSlot.getValue();
+                            boolean allowRegistration = !byteArrayAllZero(availableSlotValue) && (registeredDevice == null);
+                            availableSlotValue = allowRegistration ? availableSlotValue : (new byte[16]);
+
+                            // This response is important, so make several attempts:
+                            int i = 0; 
+                            while (!taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                (allowRegistration) ? BluetoothGatt.GATT_SUCCESS : BluetoothGatt.GATT_FAILURE,
+                                0,
+                                availableSlotValue) && i < MAX_TRIES) 
+                            {
+                                i++;
+                                DebugLog(INFO, "sendResponse returned false, making new attempt; sending to : " + 
+                                               currentDevice.stringify_short());
+                            }
+
+                            if (allowRegistration && i != MAX_TRIES) {
+                                // Uuid we sent was valid, so we update the available slot & arrays...
+                                UUID registeredUuid = UuidUtils.asUuid(availableSlotValue);
+                                taAvailableDeviceSlots.remove(registeredUuid);
+                                taEngagedDeviceSlots.put(currentDevice, new ServerBLEDeviceRecord(registeredUuid, false));
+                                availableSlot.setValue((taAvailableDeviceSlots.size() > 0) ? UuidUtils.asBytes(taAvailableDeviceSlots.get(0)) : 
+                                    new byte[16] // In case there is no any available slot.
+                                );
+                                DebugLog(VERBOSE, "New device registered, not subscribed yet, name : " + currentDevice.stringify_short());
+
+                                // Regisrting was successful. Check for free slots:
+                                if (taAutoAdvertisments && taAvailableDeviceSlots.isEmpty()) {
+                                    if (taBluetoothLeAdvertiser != null && taAdvertiseCallback != null) {
+                                        DebugLog(INFO, "Auto advertising: stop advertising, limit reached.");
+                                        taBluetoothLeAdvertiser.stopAdvertising(taAdvertiseCallback);
+                                        taBluetoothLeAdvertiser = null;
+                                        taAdvertiseCallback = null;
+                                    } else {
+                                        DebugLog(INFO, "Auto advertising: fail (not running).");
+                                    }
+                                }
+                            }
+                        } else {
+                            if (registeredDevice != null && registeredDevice.uuid.equals(characteristic.getUuid()) && offset == 0) {
+                                // This is our UUID and we can read it. If client want to read a message he should use notifyers.
+                                taBluetoothGattServer.sendResponse(device,
+                                    requestId,
+                                    BluetoothGatt.GATT_SUCCESS,
+                                    0,
+                                    UuidUtils.asBytes(registeredDevice.uuid));
+                                DebugLog(INFO, "Why device read its assigned uuid? Device name : " + currentDevice.stringify_short());
+                            } else {
+                                // Invalid characteristic (or offset != 0).
+                                taBluetoothGattServer.sendResponse(device,
+                                    requestId,
+                                    BluetoothGatt.GATT_FAILURE,
+                                    0,
+                                    null);
+                                DebugLog(INFO, "Cancel connection to " + currentDevice.stringify_short() + 
+                                    " due to invalid characteristic read request; required offset: " + offset);
+                                taBluetoothGattServer.cancelConnection(device);
+                            }
+                        }
+                    } // Method run().
+                };
+
+                addAsyncTaskWithResponse(newTask, device, requestId, "onCharacteristicReadRequest()");
+            } // onCharacteristicReadRequest() function end.
+
+            // Callback C++. Server now get the message, because client sent the message. Allow writing only if registered and subscribed.
+            @Override
+            public void onCharacteristicWriteRequest (final BluetoothDevice device, 
+                                                      final int requestId, 
+                                                      final BluetoothGattCharacteristic characteristic, 
+                                                      final boolean preparedWrite, 
+                                                      final boolean responseNeeded, 
+                                                      final int offset, 
+                                                      final byte[] value) 
+            { 
+                super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value);
+
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+                if (!responseNeeded) {
+                    DebugLog(ERROR, "WriteRequest without responseNeeded! Device name : " + currentDevice.stringify_short());
+                    return;
+                }
+
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        // Just to check that the server is still valid.
+                        if (getCharacteristic() == null) {
+                            DebugLog(ERROR, "Availible slot is null! - onCharacteristicWriteRequest");
+                            return;
+                        }
+
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+                        if (registeredDevice != null && registeredDevice.uuid.equals(characteristic.getUuid()) && registeredDevice.subscribed) 
+                        {
+                            // This is our UUID and we can write to it.
+                            if (preparedWrite) {
+                                registeredDevice.longMessage.add(value);
+                            } else {
+                                DebugLog(VERBOSE, "C++ callback. Message from the device : " + currentDevice.stringify_short());
+                                cppOnClientMessage(currentDevice.stringifyForC(), new String(value, StandardCharsets.UTF_8));
+                            }
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                BluetoothGatt.GATT_SUCCESS,
+                                0,
+                                new byte[0]);
+                        } else {
+                            // Invalid characteristic. Or device was not subscribed.
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                BluetoothGatt.GATT_FAILURE,
+                                0,
+                                null);
+                            DebugLog(INFO, "Cancel connection to " + currentDevice.stringify_short() + 
+                                            " due to invalid characteristic write request!");
+                            taBluetoothGattServer.cancelConnection(device);
+                        }
+                    } // Method run().
+                };
+
+                addAsyncTaskWithResponse(newTask, device, requestId, "onCharacteristicWriteRequest()");
+            } // onCharacteristicWriteRequest().
+
+            // If client message was too long, then this callback is called.
+            @Override
+            public void onExecuteWrite(final BluetoothDevice device, final int requestId, final boolean execute) {
+                super.onExecuteWrite(device, requestId, execute);
+
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+                        if (registeredDevice == null || !registeredDevice.subscribed) {
+                            DebugLog(ERROR, "Unconnected device completed the write. Device name : " + currentDevice.stringify_short());
+                            return;
+                        }
+                        if (execute) {
+                            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                            for (byte[] b : registeredDevice.longMessage) {
+                                outputStream.write(b, 0, b.length);
+                            }
+                            DebugLog(VERBOSE, "C++ callback. Long message from the device : " + currentDevice.stringify_short());
+                            cppOnClientMessage(currentDevice.stringifyForC(), new String(outputStream.toByteArray(), StandardCharsets.UTF_8));
+                        }
+                        registeredDevice.longMessage.clear();
+                    }
+                };
+
+                newAsyncTask(newTask, "onExecuteWrite()");
+            }
+
+            // Client want to get info about subscription.
+            @Override
+            public void onDescriptorReadRequest(final BluetoothDevice device, final int requestId, final int offset,
+                                                final BluetoothGattDescriptor descriptor) 
+            {
+                super.onDescriptorReadRequest(device, requestId, offset, descriptor);
+
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (taBluetoothGattServer == null) {
+                            DebugLog(ERROR, "Gatt server pointer is null in onDescriptorReadRequest!");
+                            return;
+                        }
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+
+                        if (CLIENT_CONFIG.equals(descriptor.getUuid()) && registeredDevice != null && 
+                            descriptor.getCharacteristic().getUuid().equals(registeredDevice.uuid)) 
+                        {
+                            byte[] returnValue;
+                            if (registeredDevice.subscribed) {
+                                returnValue = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
+                            } else {
+                                returnValue = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE;
+                            }
+
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                BluetoothGatt.GATT_SUCCESS,
+                                0,
+                                returnValue);
+                        } else {
+                            // No such descriptor or device unregistered. Or the device reads subscription of other descriptor.
+                            DebugLog(ERROR, "Invalid descriptor read from device. Device name : " + currentDevice.stringify_short());
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                BluetoothGatt.GATT_FAILURE,
+                                0,
+                                null);
+                            DebugLog(INFO, "Cancel connection to " + currentDevice.stringify_short() + 
+                                           " due to invalid descriptor read request!");
+                            taBluetoothGattServer.cancelConnection(device);
+                        }
+                    } 
+                };
+
+                addAsyncTaskWithResponse(newTask, device, requestId, "onDescriptorReadRequest()");
+            } // onDescriptorReadRequest().
+
+            @Override
+            public void onDescriptorWriteRequest(final BluetoothDevice device, final int requestId,
+                                                final BluetoothGattDescriptor descriptor,
+                                                final boolean preparedWrite, final boolean responseNeeded,
+                                                final int offset, final byte[] value) 
+            {
+                super.onDescriptorWriteRequest(device, requestId, descriptor, preparedWrite, responseNeeded, offset, value);
+                
+                final CBluetoothDevice currentDevice = new CBluetoothDevice(device);
+                if (!responseNeeded) {
+                    DebugLog(ERROR, "DescriptorWriteRequest without responseNeeded! Device name : " + currentDevice.stringify_short());
+                    return;
+                }
+
+                Runnable newTask = new Runnable() {
+                    @Override
+                    public void run() {
+                        if (taBluetoothGattServer == null) {
+                            DebugLog(ERROR, "Gatt server pointer is null in onDescriptorReadRequest!");
+                            return;
+                        }
+                        ServerBLEDeviceRecord registeredDevice = taEngagedDeviceSlots.get(currentDevice);
+                        if (CLIENT_CONFIG.equals(descriptor.getUuid()) && registeredDevice != null && 
+                            descriptor.getCharacteristic().getUuid().equals(registeredDevice.uuid)) 
+                        {
+                            if (Arrays.equals(BluetoothGattDescriptor.ENABLE_INDICATION_VALUE, value)) {
+                                // Remove timer assigned to this device (he came just in time): 
+                                if (taHandler != null) {
+                                    taHandler.removeCallbacksAndMessages(getToken(currentDevice));
+                                }
+                                registeredDevice.subscribed = true;
+                                DebugLog(VERBOSE, "C++ callback. Registered device subscribed : " + currentDevice.stringify_short());
+                                cppOnNewConnection(currentDevice.stringifyForC());
+                            } else if (Arrays.equals(BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE, value)) {
+                                DebugLog(INFO, "Unsubscribe device from notifications: " + device);
+                                registeredDevice.subscribed = false;
+                            }
+
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                (!Arrays.equals(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE, value)) ? BluetoothGatt.GATT_SUCCESS : 
+                                    BluetoothGatt.GATT_FAILURE,
+                                0,
+                                null);
+
+                            if (!registeredDevice.subscribed) {
+                                DebugLog(ERROR, "Device unsubscribed, cancel connection: " + currentDevice.stringify_short());
+                                taBluetoothGattServer.cancelConnection(device);
+                            }
+                        } else {
+                            // No such descriptor or device unregistered. Or the device writes subscription of other descriptor.
+                            DebugLog(ERROR, "Invalid descriptor write from device. Device name : " + currentDevice.stringify_short());
+                            taBluetoothGattServer.sendResponse(device,
+                                requestId,
+                                BluetoothGatt.GATT_FAILURE,
+                                0,
+                                null);
+                            DebugLog(INFO, "Cancel connection to " + currentDevice.stringify_short() + 
+                                " due to invalid descriptor write request!");
+                            taBluetoothGattServer.cancelConnection(device);
+                        }
+                    }
+                };
+
+                addAsyncTaskWithResponse(newTask, device, requestId, "onDescriptorWriteRequest()");
+            } // onDescriptorWriteRequest() end.
+
+        } // CustomGattServerCallback end.
+
+        /**
+        * Resume advertising if it is not running.
+        * Non-blocking operation. But the plugin' thread will wait until advertising callback is triggered.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public void resumeAdvertisments() {
+            Runnable newTask = new Runnable() {
+                @Override
+                public void run() {
+                    if (taBluetoothLeAdvertiser != null || taAdvertiseCallback != null) {
+                        DebugLog(ERROR, "Advertising is already running!");
+                        return;
+                    }
+                    if (!isBluetoothEnabled() || !isBluetoothLowEnergySupported()) {
+                        DebugLog(INFO, "Start Advertising requires Bluetooth.");
+                        return;
+                    }             
+                    if (taBluetoothGattServer == null) {
+                        DebugLog(INFO, "Start Advertising requires GATT server.");
+                        return;
+                    }
+                    if (taIsScanning) {
+                        DebugLog(ERROR, "Start Advertising failed, you need to turn off scanning firstly!");
+                        return;
+                    }
+
+                    // Don't check for returning result (all debugging messages are printed inside the call).
+                    // If we block here then the whole Handler thread will be blocked. Use timeout:
+                    resumeAdvertisments_safe(MILLISECONDS_WAIT_CALLBACK);
+                }
+            };
+
+            newAsyncTask(newTask, "resumeAdvertisments()");
+        }
+
+        /**
+        * Stop Bluetooth advertisements.
+        * Non-blocking operation, but is running on the separate thread.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public void stopAdvertising() {
+            Runnable newTask = new Runnable() {
+                @Override
+                public void run() {
+                    if (taBluetoothLeAdvertiser != null) {
+                        if (taAdvertiseCallback == null) {
+                            DebugLog(ERROR, "Why advertise callback is null but taBluetoothLeAdvertiser is not ?");
+                        } else {
+                            taBluetoothLeAdvertiser.stopAdvertising(taAdvertiseCallback);
+                            taBluetoothLeAdvertiser = null;
+                            taAdvertiseCallback = null;
+                        }
+                    }
+                }
+            };
+
+            newAsyncTask(newTask, "stopAdvertising()");
+        }
+
+        /**
+        * Shut down the GATT server & advertisements.
+        * Non-blocking operation, but is running on the separate thread.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public void stopBLEGattServer() {
+            newAsyncTask(new BLEGattServerStopper(), "stopBLEGattServer()");
+        }
+
+        /**
+        * Runnable used for stopping the GATT server.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        private class BLEGattServerStopper implements Runnable {
+            @Override
+            public void run() {
+                // Just copy body of stopAdvertising task:
+                if (taBluetoothLeAdvertiser != null && taAdvertiseCallback != null) {
+                    taBluetoothLeAdvertiser.stopAdvertising(taAdvertiseCallback);
+                    taBluetoothLeAdvertiser = null;
+                    taAdvertiseCallback = null;
+                }
+                // Now close server:
+                if (taBluetoothGattServer != null) {
+                    // We will close server and set it to null immidiately. 
+                    // This means that check for getCharacteristic() in onConnectionStateChange() will fail.
+                    for (ConcurrentHashMap.Entry<CBluetoothDevice, ServerBLEDeviceRecord> entry : taEngagedDeviceSlots.entrySet()) {
+                        taBluetoothGattServer.cancelConnection(entry.getKey().getDevice());
+                        if (entry.getValue().subscribed) {
+                            // Device was connected:
+                            DebugLog(VERBOSE, "C++ callback - device disconnected: " + entry.getKey().stringify_short());
+                            cppOnConnectionClosed(entry.getKey().stringifyForC());
+                        }
+                        // No sense in connection closers.
+                        if (taHandler != null) {
+                            taHandler.removeCallbacksAndMessages(getToken(entry.getKey()));
+                        }
+                    }
+
+                    taBluetoothGattServer.close();
+                    taBluetoothGattServer = null;
+                }
+                // Service is down, release memory and free resources:
+                taAvailableDeviceSlots.clear();
+                taEngagedDeviceSlots.clear();
+            }
+        }
+
+        /**
+        * If Bluetooth low-energy advertisements are on.
+        * Non-blocking operation.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+        public boolean isAdvertisingRunning() {
+            return taBluetoothLeAdvertiser != null;
+        }
+
+        /**
+        * If Bluetooth low-energy GATT server is running.
+        * Non-blocking operation.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public boolean isBleGattServerRunning() {
+            return taBluetoothGattServer != null;
+        }
+
+        /**
+        * Set taAutoAdvertisments flag. If flag is true then the plugin will attempt to 
+        * turn advertisments on when new free available slot occures and turn advertisments
+        * off when all slots are busy.
+        * Non-blocking operation.
+        * @return Old value of the flag.
+        */
+        public boolean setAutoAdvertisments(boolean newValue) {
+            boolean oldValue = taAutoAdvertisments;
+            taAutoAdvertisments = newValue;
+            return oldValue;
+        }
+
+        /**
+        * Get connected devices. We say device is connected only when a) it is registered and b) it is subscribed.
+        * Non-blocking operation.
+        * taEngagedDeviceSlots is concurrent type so this method is thread-safe.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public String[] getBLEServerConnectedDevices() {
+            if (taBluetoothGattServer != null) {
+                Set<ConcurrentHashMap.Entry<CBluetoothDevice, ServerBLEDeviceRecord>> entries = taEngagedDeviceSlots.entrySet();
+                ArrayList<String> returnDevices = new ArrayList<String>(entries.size());
+                for (ConcurrentHashMap.Entry<CBluetoothDevice, ServerBLEDeviceRecord> entry : entries) {
+                    if (entry.getValue().subscribed) {
+                        returnDevices.add(entry.getKey().stringifyForC());
+                    }
+                }
+                return returnDevices.toArray(new String[returnDevices.size()]);
+            }
+            DebugLog(ERROR, "No GATT server - in call of getBLEServerConnectedDevices() !");
+            return new String[]{};
+        }
+
+        /**
+        * Check if device is connected by its representation string.
+        * Non-blocking operation.
+        * taEngagedDeviceSlots is concurrent type so this method is thread-safe.
+        * @param deviceStr String that we get with stringify_short() call.
+        * @return True if device is connected & subscribed.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public boolean isDeviceBleConnected(String deviceStr) {
+            if (taBluetoothGattServer != null) {
+                ServerBLEDeviceRecord serverRecord = taEngagedDeviceSlots.get(new CBluetoothDevice(deviceStr));
+                return (serverRecord != null) ? serverRecord.subscribed : false;
+            }
+            DebugLog(ERROR, "No GATT server - in call of isDeviceBleConnected() !");
+            return false;
+        }
+
+        /**
+        * Send message to the GATT client.
+        * Blocking operation. Will wait until message is delivered or not.
+        * @param deviceStr The representation of the device (string returned by stringify_short call).
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public boolean sendBLEMessage(final String deviceStr, final String msg) {
+            final byte[] bytesMsg = msg.getBytes(StandardCharsets.UTF_8);
+            if (bytesMsg.length >= 512) { // MTU limit.
+                DebugLog(ERROR, "Can't send too big message!");
+                return false;
+            }
+            
+            Callable<Boolean> newTask = new Callable<Boolean>() {
+                @Override
+                public Boolean call() throws Exception {
+                    if (taBluetoothGattServer == null) {
+                        DebugLog(ERROR, "Server not running!");
+                        return false;
+                    }
+                    for (ConcurrentHashMap.Entry<CBluetoothDevice, ServerBLEDeviceRecord> entry : taEngagedDeviceSlots.entrySet()) {
+                        if ( deviceStr.equals(entry.getKey().stringify_short()) ) {
+                            if ( !entry.getValue().subscribed ) {
+                                DebugLog(ERROR, "Trying to write to device that is not subscribed!");
+                                return false;
+                            }
+                            BluetoothGattCharacteristic pipeCharacteristic = getCharacteristic(entry.getValue().uuid);
+                            if ( pipeCharacteristic == null) {
+                                DebugLog(ERROR, "taEngagedDeviceSlots contain wrong uuids!");
+                                return false;
+                            }
+                            pipeCharacteristic.setValue(bytesMsg);
+                            int i = 0;
+                            while ( !taBluetoothGattServer.notifyCharacteristicChanged(entry.getKey().getDevice(), pipeCharacteristic, true) && 
+                                i < MAX_TRIES ) {
+                                    i++;
+                                    DebugLog(INFO, "New try of sending the message.");
+                            }
+                            return i < MAX_TRIES;
+                        }
+                    }
+                    DebugLog(ERROR, "No such device while send a message!");
+                    return false;
+                }
+            };
+
+            return newAsyncTask(newTask, MILLISECONDS_WAIT_FUTURE_TASK, false, new Boolean(false), "sendBLEMessage()").booleanValue();
+        }
+
+        /**
+        * Disconnect GATT client from server side.
+        * Non-blocking operation. Runs on other thread.
+        * @param deviceStr The representation of the device (string returned by stringify_short() call).
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public void closeBLEDeviceConnection(final String deviceStr) {
+            // We will not wait so pass -1.
+            newAsyncTask(new BLEGattServerConnectionCloser(new CBluetoothDevice(deviceStr)), "closeBLEDeviceConnection()");
+        }
+
+        /**
+        * Create token for thread Handler.
+        */
+        private String getToken(CBluetoothDevice device) {
+            return "close|" + device.stringify_short();
+        }
+
+        /**
+        * Class used to close the BLE connection to the device from the server side.
+        * You can pass even a temporary device (then we will try to find it in taEngagedDeviceSlots) or
+        * pass a device from BluetoothDevice (then we will close connection directly).
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        private class BLEGattServerConnectionCloser implements Runnable {
+            private CBluetoothDevice device = null; // Classic Bluetooth or temporary.
+
+            BLEGattServerConnectionCloser(final CBluetoothDevice device) { this.device = device; }
+
+            @Override
+            public void run() {
+                if (taBluetoothGattServer == null) {
+                    DebugLog(ERROR, "Server not running!");
+                    return;
+                }
+                // If it is temporary then we can find it in the map by its representation string:
+                for (ConcurrentHashMap.Entry<CBluetoothDevice, ServerBLEDeviceRecord> entry : taEngagedDeviceSlots.entrySet()) {
+                    if ( device.equals(entry.getKey()) ) {
+                        taBluetoothGattServer.cancelConnection(entry.getKey().getDevice());
+                        // See onConnectionStateChange in CustomGattServerCallback, where we call c++ callback.
+                        return;
+                    }
+                }
+                // If it was made with classic constructor then we can get BluetoothDevice pointer:
+                if (!device.isTemporary()) {
+                    taBluetoothGattServer.cancelConnection(device.getDevice());
+                    return;
+                }
+
+                DebugLog(ERROR, "No such device while closing connection!");
+            }
+        }
+
+
+        /**
+        * ################ GATT client interface: ################
+        * TODO
+        */
+
+
+        /**
+        * Connecting to a GATT server.
+        * Blocking operation. Running on separate thread.
+        * @param deviceStringRepresentation The device we want to connect to (the result of call stringify_short()).
+        * @return True if connection was successful.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.M)
+        public boolean connectGattServer(final String deviceStringRepresentation)
+        {
+            Callable<Boolean> newTask = new Callable<Boolean>() {
+                @Override
+                public Boolean call() throws Exception {
+                    // Check that all is ok for connection.
+                    if (!checkGeneralConditions("connectGattServer()") || !isBluetoothLowEnergySupported()) {
+                        return false;
+                    } 
+                    // For now nobody will access the discovered devices array.
+
+                    // Find device in the discovered device list. If index > 0 then its valid until this callable ends.
+                    CBluetoothDevice currentDevice = new CBluetoothDevice(deviceStringRepresentation);
+                    BluetoothDevice deviceConnectTo = null;
+                    int index = taDiscoveredLEResults.indexOf(currentDevice);
+                    if (index < 0) {
+                        DebugLog(VERBOSE, "While connecting to a GATT: " + 
+                                          "device wan't found in the discovered devices array. Trying to getRemoteDevice()...");
+                        String addr = currentDevice.getAddress();
+                        if (addr == null) {
+                            // The representation string was incorrect.
+                            return false;
+                        }
+                        try {
+                            deviceConnectTo = taBluetoothAdapter.getRemoteDevice(addr);
+                        } catch (IllegalArgumentException e) {
+                            // The representation string contains incorrect address (that must be uppercase, like '00:11:22:33:AA:BB').
+                            DebugLog(ERROR, "Incorrect address when connect to a server: " + e.getMessage());
+                            return false;
+                        }
+                    } else {
+                        deviceConnectTo = taDiscoveredLEResults.get(index).getDevice();
+                    }
+
+                    if (deviceConnectTo == null) {
+                        DebugLog(ERROR, "Can't find a device to connect to with the representation string: " + deviceStringRepresentation);
+                        return false;
+                    }
+
+                    // Register bond state receiver:
+                    taGattConnectCallback = new CustomGattConnectCallback();
+                    // Set server device:
+                    taGattConnectCallback.serverDevice = new CBluetoothDevice(deviceConnectTo);
+                    // 
+                    taGattConnectCallback.currentOperation.set(OperationType.CONNECT);
+                    // Start connection:
+                    taGattConnectCallback.gatt = deviceConnectTo.connectGatt(getApplicationContext(), false, 
+                                                                             taGattConnectCallback, BluetoothDevice.TRANSPORT_LE);
+
+                    // TODO: bond !!
+
+                    return false;
+                }
+            }; // Callable end.
+
+            return newAsyncTask(newTask, MILLISECONDS_WAIT_FUTURE_TASK, true, new Boolean(false), "connectGattServer()").booleanValue();
+        }
+
+        /**
+        * If MINOR_ERROR then you should retry operation. ERROR - no sense in retry, FATAL - please, close the connection.
+        */
+        private static enum OperationState {
+            OK, MINOR_ERROR, ERROR, FATAL
+        }
+
+        /**
+        * Current GATT operation.
+        */
+        private static enum OperationType {
+            CHARACTERISTIC_READ, CHARACTERISTIC_WRITE,
+            CONNECT, DESCRIPTOR_READ, DESCRIPTOR_WRITE,
+            SERVICES_DISCOVER
+        }
+
+        /** 
+        * Class represent result of operation.
+        */
+        private static class OperationResult {
+            public OperationState state;
+            public Object value;
+            
+            OperationResult(final OperationState state, final Object value) {
+                this.state = state;
+                this.value = value;
+            }
+        }
+
+        /**
+        * Client callback implementation. All variables used for connection are stored here.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        private class CustomGattConnectCallback extends BluetoothGattCallback
+        {
+            // Share results gained from callbacks. Yes, its size of 1, we process our tasks sequencelly so each task waits for 1 result.
+            public ArrayBlockingQueue<OperationResult> resultQueue = new ArrayBlockingQueue<OperationResult>(1);
+                // If there is already a result then we don't block but accept it as an error of the plugin.
+                // We never call put(), but call add() and catch IllegalStateException if queue is full.
+                // Alsp we use poll() with 2 parameters (timeout) to avoid blocking.
+                
+            // It is additional layer of the sequrity. If you wait for a result then you firsly set the type:
+            public AtomicReference<OperationType> currentOperation = new AtomicReference<OperationType>(null);
+                // Null if no pending operation.
+
+            // GATT connection & device itself.
+            public CBluetoothDevice serverDevice = null;
+            public BluetoothGatt gatt = null;
+
+            // If state is bonding then we need to wait for a result. This class is used for it.
+            public class BondStateReceiver extends BroadcastReceiver {
+                // Set semaphore to new object if you want to wait for a certain bond state.
+                public volatile Semaphore bondResultSemaphore = null;
+
+                public volatile boolean bondSuccess = false;
+
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    final String action = intent.getAction();
+                    final BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+
+                    if ( serverDevice == null || device == null || !serverDevice.equals(new CBluetoothDevice(device)) 
+                        || action == null || bondResultSemaphore == null ) 
+                    {
+                        return;
+                    }
+
+                    if (action.equals(BluetoothDevice.ACTION_BOND_STATE_CHANGED)) {
+                        final int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1);
+                        final int previousBondState = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1);
+
+                        switch (bondState) {
+                            case BluetoothDevice.BOND_BONDED:
+                                bondSuccess = true;
+                                bondResultSemaphore.release();
+                                break;
+                            case BluetoothDevice.BOND_NONE:
+                                bondSuccess = false;
+                                bondResultSemaphore.release();
+                                break;
+                        }
+                    }
+                }
+            }
+
+            public BondStateReceiver bondStateReceiver = null;
+
+            // Register receiver on construct:
+            CustomGattConnectCallback() {
+                bondStateReceiver = new BondStateReceiver();
+                getApplicationContext().registerReceiver(bondStateReceiver, 
+                        new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+            }
+
+            // Close connection and unregister receiver. 
+            public void end() {
+                if (gatt != null) { gatt.disconnect(); }
+                if (bondStateReceiver != null) { getApplicationContext().unregisterReceiver(bondStateReceiver); }
+            }
+
+            @Override
+            public void onConnectionStateChange(final BluetoothGatt gatt, final int status, final int newState) {
+                super.onConnectionStateChange(gatt, status, newState);
+                // Error or connection lost:
+                if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    stopBLEGattClient();
+                    gatt.close();
+                }
+                // New connection: TODO.
+            }
+
+            @Override
+            public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+            }
+        }
+
+        /**
+        * Shut down the GATT client.
+        * Non-blocking operation, but is running on the separate thread.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public void stopBLEGattClient() {
+            newAsyncTask(new BLEGattClientStopper(), "stopBLEGattClient()");
+        }
+        
+        /**
+        * Class used for stopping the connection to the GATT server.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        private class BLEGattClientStopper implements Runnable {
+            @Override
+            public void run() {
+                if (taGattConnectCallback != null) {
+                    taGattConnectCallback.end();
+                    taGattConnectCallback = null;
+                }
+            }
+        }
+
+        /**
+        * If GATT client is running.
+        * Non-blocking operation.
+        */
+        @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
+        public boolean isRunningGattClient() {
+            return (taGattConnectCallback != null);
         }
 
     ]]>
