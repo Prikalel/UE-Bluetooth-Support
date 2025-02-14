@@ -36,8 +36,11 @@ void FBluetoothSupportModule::ShutdownModule()
 	// we call this function before unloading the module.
 	#if PLATFORM_ANDROID
 	if (TaModule != NULL)
+	{
 		TaModule->ClearAllDeviceScanSucceedCompleteDelegate_Handles();
 		TaModule->ClearAllDeviceScanFinishDelegate_Handles();
+	}
+		
 	#endif
 
 	TaModule = NULL;
