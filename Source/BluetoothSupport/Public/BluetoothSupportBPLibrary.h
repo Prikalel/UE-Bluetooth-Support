@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "CoreDelegates.h"
+#include "Misc/CoreDelegates.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "BluetoothSupportBPLibrary.generated.h"
 

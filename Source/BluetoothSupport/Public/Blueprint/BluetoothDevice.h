@@ -8,7 +8,7 @@
 
 
 #pragma once
-#include "CString.h"
+#include "Misc/CString.h"
 #include "CoreMinimal.h"
 #include "Misc/DateTime.h"
 #include "BluetoothDevice.generated.h"

@@ -66,7 +66,7 @@ namespace UnrealBuildTool.Rules
 				PrivateDependencyModuleNames.AddRange(new string[] { "Launch" });
 
 				string PluginRelativePath = Utils.MakePathRelativeTo(ModuleDirectory, Target.RelativeEnginePath);
-				AdditionalPropertiesForReceipt.Add(new ReceiptProperty("AndroidPlugin", Path.Combine(PluginRelativePath, "TaModuleAPL.xml")));
+				AdditionalPropertiesForReceipt.Add("AndroidPlugin", Path.Combine(PluginRelativePath, "TaModuleAPL.xml"));
 			}
 		}
 	}
